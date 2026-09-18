@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>AI Receptionist Avatar</title>
+</head>
+
+<body>
+
+<div id="app">
+
+    <canvas id="avatar-canvas"></canvas>
+
+
+    <div class="avatar-ui">
+
+        <div class="avatar-title">
+            AI Receptionist
+        </div>
+
+        <div
+            id="status"
+            class="avatar-status"
+            data-type="loading"
+        >
+            Loading receptionist avatar...
+        </div>
+
+        <div class="avatar-state">
+
+            State:
+
+            <span id="state-label">
+                IDLE
+            </span>
+
+        </div>
+
+    </div>
+
+
+    <div class="demo-controls">
+
+        <button onclick="setAvatarState('idle')">
+            🧍 Formal
+        </button>
+
+        <button onclick="setAvatarState('visitor_detected')">
+            👤 Visitor
+        </button>
+
+        <button onclick="playNamaste()">
+            🙏 Namaste
+        </button>
+
+        <button onclick="setAvatarState('listening')">
+            👂 Listening
+        </button>
+
+        <button onclick="setAvatarState('thinking')">
+            🤔 Thinking
+        </button>
+
+        <button onclick="startSpeaking()">
+            🗣️ Speaking
+        </button>
+
+        <button onclick="setAvatarState('visitor_left')">
+            👋 Visitor Left
+        </button>
+
+        <button onclick="attendVisitor()">
+            👀 Look Visitor
+        </button>
+
+        <button onclick="startReceptionDemo()">
+            ▶️ Auto Demo
+        </button>
+
+        <button onclick="stopReceptionDemo()">
+            ⏹ Stop
+        </button>
+
+    </div>
+
+</div>
+
+
+<script
+    type="module"
+    src="/src/main.js"
+></script>
+
+</body>
+</html>
