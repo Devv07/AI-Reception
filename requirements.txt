@@ -1,0 +1,38 @@
+
+# ---------- CORE FRAMEWORK ----------
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.12
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# ---------- LLM (GROQ) ----------
+groq==0.11.0
+tenacity==9.0.0
+
+# ---------- RAG / VECTOR STORE ----------
+chromadb==0.5.15
+sentence-transformers==3.1.1
+tiktoken==0.7.0
+
+# ---------- DOCUMENT PROCESSING ----------
+pypdf==5.0.1
+python-docx==1.1.2
+
+# ---------- DATABASE (shared with Member 3) ----------
+sqlalchemy==2.0.35
+
+# ---------- ML / ANALYTICS ----------
+scikit-learn==1.5.2
+numpy==1.26.4
+pandas==2.2.3
+
+# ---------- UTILITIES ----------
+python-dotenv==1.0.1
+httpx==0.27.2
+aiofiles==24.1.0
+requests==2.32.3
+
+# ---------- TESTING ----------
+pytest==8.3.3
+pytest-asyncio==0.24.0
