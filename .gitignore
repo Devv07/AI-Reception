@@ -1,0 +1,12 @@
+@"
+.env
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.pyc
+dist/
+build/
+.vscode/
+.idea/
+"@ | Set-Content .gitignore
