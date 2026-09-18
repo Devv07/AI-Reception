@@ -1,64 +1,52 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from core.config import settings
-from services.ai.reception import build_answer, detect_intent, get_time_of_day, should_handoff
-from services.rag.knowledge_base import knowledge_base
+from core.config import ALLOWED_ORIGINS, APP_NAME
+from services.ai.pipeline import chat
+from services.rag.ingest import ingest_directory
 
-app = FastAPI(title=settings.app_name)
+app = FastAPI(title=APP_NAME)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ChatRequest(BaseModel):
     query: str
-    history: list[str] | None = None
-
-
-class ChatResponse(BaseModel):
-    answer: str
-    intent: str
-    confidence: float
-    handoff: bool
-    department: str
-    source: str
-
-
-@app.on_event("startup")
-def startup_event() -> None:
-    knowledge_base.index_documents()
-
-
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
-    if not request.query.strip():
-        raise HTTPException(status_code=400, detail="Query cannot be empty")
-
-    intent_info = detect_intent(request.query, request.history)
-    answer, source = build_answer(request.query, request.history, settings.org_name)
-    handoff_info = should_handoff(request.query, request.history, intent_info["confidence"])
-
-    return ChatResponse(
-        answer=answer,
-        intent=intent_info["intent"],
-        confidence=intent_info["confidence"],
-        handoff=handoff_info["handoff"],
-        department=handoff_info["department"],
-        source=source,
-    )
+    org_id: str
+    conversation_id: str
+    channel: str = "web"
+    org_name: str = "our organization"
 
 
 @app.get("/")
-def root() -> dict[str, str]:
-    return {"message": "AI Reception API is running", "time_of_day": get_time_of_day()}
+async def root() -> dict[str, str]:
+    return {"status": "ok", "app": APP_NAME}
 
 
-if __name__ == "__main__":
-    import uvicorn
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "healthy"}
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+
+@app.post("/api/chat")
+async def api_chat(request: ChatRequest) -> dict:
+    return await chat(
+        query=request.query,
+        org_id=request.org_id,
+        conversation_id=request.conversation_id,
+        channel=request.channel,
+        org_name=request.org_name,
+    )
+
+
+@app.post("/api/ingest")
+async def api_ingest(org_id: str, dir_path: str = "knowledge") -> dict:
+    return await ingest_directory(dir_path, org_id)
