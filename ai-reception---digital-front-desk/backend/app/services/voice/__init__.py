@@ -1,0 +1,1 @@
+"""Voice interface adapters for the central reception conversation API."""

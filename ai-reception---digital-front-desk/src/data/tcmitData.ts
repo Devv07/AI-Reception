@@ -1,0 +1,156 @@
+import { DepartmentInfo, KnowledgeSource } from '../types/reception';
+
+export const TCMIT_INFO = {
+  name: 'TCMIT',
+  fullName: 'Tribhuvan College of Management & IT',
+  fullNameNe: 'त्रिभुवन कलेज अफ म्यानेजमेन्ट एण्ड आईटी',
+  address: 'Baneshwor, Kathmandu, Nepal',
+  phone: '+977-1-4491234',
+  email: 'reception@tcmit.edu.np',
+  hours: '7:00 AM - 5:30 PM (Sun - Fri)',
+  receptionKioskId: 'KIOSK-LOBBY-01',
+};
+
+export const DEPARTMENTS: DepartmentInfo[] = [
+  {
+    id: 'admissions',
+    name: 'Admissions Office',
+    nameNe: 'भर्ना शाखा',
+    code: 'ADM',
+    block: 'Block A',
+    floor: 'Ground Floor',
+    room: 'Room A-102',
+    hours: '8:00 AM - 4:30 PM',
+    officer: 'Mr. Sunil Sharma',
+    contact: 'Ext. 101',
+  },
+  {
+    id: 'principal',
+    name: "Principal's Executive Office",
+    nameNe: 'प्रिन्सिपल कार्यालय',
+    code: 'PRN',
+    block: 'Block B',
+    floor: '2nd Floor',
+    room: 'Room B-201',
+    hours: '10:00 AM - 4:00 PM (By Appt)',
+    officer: 'Prof. Dr. Rajendra Karki',
+    contact: 'Ext. 200',
+  },
+  {
+    id: 'accounts',
+    name: 'Accounts & Finance',
+    nameNe: 'लेखा तथा आर्थिक शाखा',
+    code: 'ACC',
+    block: 'Block A',
+    floor: '1st Floor',
+    room: 'Room A-204',
+    hours: '8:30 AM - 4:00 PM',
+    officer: 'Ms. Anita Thapa',
+    contact: 'Ext. 104',
+  },
+  {
+    id: 'examination',
+    name: 'Examination Section',
+    nameNe: 'परीक्षा नियन्त्रण शाखा',
+    code: 'EXM',
+    block: 'Block B',
+    floor: '1st Floor',
+    room: 'Room B-105',
+    hours: '9:00 AM - 4:30 PM',
+    officer: 'Er. Prakash Adhikari',
+    contact: 'Ext. 108',
+  },
+  {
+    id: 'student_affairs',
+    name: 'Student Affairs & Welfare',
+    nameNe: 'विद्यार्थी कल्याण परिषद्',
+    code: 'STU',
+    block: 'Block C',
+    floor: 'Ground Floor',
+    room: 'Room C-101',
+    hours: '9:00 AM - 5:00 PM',
+    officer: 'Ms. Rachana Shrestha',
+    contact: 'Ext. 115',
+  },
+  {
+    id: 'it_support',
+    name: 'IT Services & Computing Lab',
+    nameNe: 'आईटी तथा कम्प्युटर शाखा',
+    code: 'ITS',
+    block: 'Block C',
+    floor: '3rd Floor',
+    room: 'Room C-302',
+    hours: '7:30 AM - 5:30 PM',
+    officer: 'Er. Bikash Gautam',
+    contact: 'Ext. 120',
+  },
+];
+
+export const KNOWLEDGE_SOURCES: Record<string, KnowledgeSource> = {
+  bit_admission: {
+    id: 'src-bit-2026',
+    title: 'TCMIT Undergraduate Admissions Prospectus 2026',
+    document: 'Admissions Information.pdf',
+    page: 2,
+    section: 'Clause 3.1: Bachelor of Information Technology (BIT) Eligibility',
+    excerpt:
+      'Candidates must have secured minimum Grade C in all subjects of 10+2 / PCL or equivalent with Mathematics or Computer Science (at least 100 marks). CMAT/TU entrance score sheet and original academic transcripts are mandatory at time of application.',
+    confidence: 0.98,
+    lastUpdated: 'Verified Sep 2026',
+  },
+  payment_policy: {
+    id: 'src-fee-policy',
+    title: 'TCMIT Student Accounts & Fee Resolution Protocols',
+    document: 'Finance Policy & Gateway Manual.pdf',
+    page: 14,
+    section: 'Section 4: Online Transaction Failures & Counter Receipts',
+    excerpt:
+      'In case of eSewa / Khalti / ConnectIPS transaction pending over 24 hours, the Admissions desk creates a Level 1 Finance Ticket (TCK) with bank reference id. Counter verification resolves within 2 hours.',
+    confidence: 0.95,
+    lastUpdated: 'Verified Aug 2026',
+  },
+  principal_policy: {
+    id: 'src-exec-appt',
+    title: 'TCMIT Executive Office Visitor Guidelines',
+    document: 'Executive Office Protocol.pdf',
+    page: 4,
+    section: 'Appointment Slots: Principal & Dean Consultations',
+    excerpt:
+      'Visiting hours for parents, guardians, and educational representatives are Sunday to Thursday between 10:00 AM and 1:30 PM in 30-minute blocks via Front Desk booking.',
+    confidence: 0.96,
+    lastUpdated: 'Verified Sep 2026',
+  },
+};
+
+export const SAMPLE_QUICK_ACTIONS = [
+  {
+    id: 'bit_req',
+    labelEn: 'BIT Admission Requirements',
+    labelNe: 'BIT भर्ना सम्बन्धी जानकारी',
+    icon: 'GraduationCap',
+  },
+  {
+    id: 'book_appt',
+    labelEn: "Schedule Principal's Meeting",
+    labelNe: 'प्रिन्सिपलसँग भेट्ने समय',
+    icon: 'Calendar',
+  },
+  {
+    id: 'payment_issue',
+    labelEn: 'Report Payment Issue',
+    labelNe: 'शुल्क भुक्तानीमा समस्या',
+    icon: 'ReceiptText',
+  },
+  {
+    id: 'departments',
+    labelEn: 'Campus Directory & Map',
+    labelNe: 'शाखाहरू र कोठा निर्देशिका',
+    icon: 'MapPin',
+  },
+  {
+    id: 'human_desk',
+    labelEn: 'Speak to Staff Member',
+    labelNe: 'कर्मचारीसँग कुरा गर्नुहोस्',
+    icon: 'UserCheck',
+  },
+];
