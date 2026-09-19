@@ -1,96 +1,178 @@
 import * as THREE from "three";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRMLoaderPlugin } from "@pixiv/three-vrm";
 
-import "./style.css";
-
-
 // ============================================================
-// BASIC SETUP
+// CONFIGURATION
 // ============================================================
 
-const canvas = document.getElementById("avatar-canvas");
-const statusElement = document.getElementById("status");
-const stateLabel = document.getElementById("state-label");
+const VRM_PATH = "/models/receptionist.vrm";
+const WS_URL = "ws://127.0.0.1:8765";
+
+// Set this to true when testing avatar without Python.
+const AUTO_DEMO = false;
+
+// ============================================================
+// DOM
+// ============================================================
+
+const app = document.getElementById("app");
+
+if (!app) {
+  throw new Error("Element #app was not found.");
+}
+
+// ============================================================
+// THREE.JS
+// ============================================================
 
 const scene = new THREE.Scene();
 
+scene.background = new THREE.Color(0x171b21);
+
 const camera = new THREE.PerspectiveCamera(
-  28,
+  32,
   window.innerWidth / window.innerHeight,
-  0.1,
+  0.01,
   100
 );
 
-camera.position.set(0, 1.35, 3.0);
+camera.position.set(0, 1.4, 3.35);
+camera.lookAt(0, 1.35, 0);
 
 const renderer = new THREE.WebGLRenderer({
-  canvas,
   antialias: true,
-  alpha: true,
+  alpha: false,
 });
 
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.outputColorSpace = THREE.SRGBColorSpace;
 
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.9;
+
+renderer.shadowMap.enabled = false;
+
+app.appendChild(renderer.domElement);
 
 // ============================================================
 // LIGHTING
 // ============================================================
 
-const ambientLight = new THREE.AmbientLight(0xffffff, 2.2);
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
+
 scene.add(ambientLight);
 
-const keyLight = new THREE.DirectionalLight(0xffffff, 2.0);
-keyLight.position.set(1.5, 2.5, 3);
+const keyLight = new THREE.DirectionalLight(0xfff4e8, 1.35);
+
+keyLight.position.set(1.5, 2.8, 3.5);
 scene.add(keyLight);
 
-const fillLight = new THREE.DirectionalLight(0xffffff, 1.0);
-fillLight.position.set(-2, 1.5, 2);
+const fillLight = new THREE.DirectionalLight(0xb8d4ff, 0.3);
+
+fillLight.position.set(-2, 1.5, 2.5);
 scene.add(fillLight);
 
-
 // ============================================================
-// LOOK-AT TARGET
+// LOOK TARGET
 // ============================================================
 
-const visitorTarget = new THREE.Object3D();
+const lookTarget = new THREE.Object3D();
 
-visitorTarget.position.set(
+lookTarget.position.set(
   0,
-  1.45,
+  1.5,
   2.5
 );
 
-scene.add(visitorTarget);
-
+scene.add(lookTarget);
 
 // ============================================================
-// GLOBAL VARIABLES
+// VRM
 // ============================================================
 
 let vrm = null;
-let clock = new THREE.Clock();
 
-let currentState = "idle";
-let targetState = "idle";
+const loader = new GLTFLoader();
 
-let demoRunning = false;
-let demoTimer = null;
+loader.register((parser) => {
+  return new VRMLoaderPlugin(parser);
+});
 
-let speechTimer = null;
-let blinkTimer = null;
-let nextBlinkTime = 2.5;
+loader.load(
+  VRM_PATH,
 
-let namasteProgress = 0;
+  (gltf) => {
+    console.log("=================================");
+    console.log("VRM LOADED");
+    console.log("=================================");
 
-let attentionTarget = {
-  x: 0,
-  y: 1.45,
-  z: 2.5,
-};
+    vrm = gltf.userData.vrm;
 
+    if (!vrm) {
+      console.error("VRM object not found.");
+      return;
+    }
+
+    // IMPORTANT:
+    // Do NOT call VRMUtils / springbone update logic here.
+    // We want stable clothing.
+
+    vrm.scene.visible = true;
+
+    vrm.scene.position.set(0, 0, 0);
+    vrm.scene.scale.setScalar(1.15);
+
+    // Front-facing orientation.
+    vrm.scene.rotation.y = 0;
+
+    scene.add(vrm.scene);
+
+    // Look-at system.
+    if (vrm.lookAt) {
+      vrm.lookAt.target = lookTarget;
+    }
+
+    setupHumanoid();
+    applyInitialFormalArms();
+
+    setupExpressions();
+
+    printAvatarDiagnostics();
+
+    console.log("=================================");
+    console.log("AVATAR READY");
+    console.log("=================================");
+  },
+
+  (progress) => {
+    if (progress.total > 0) {
+      const percent =
+        (progress.loaded / progress.total) * 100;
+
+      console.log(
+        `Loading receptionist: ${percent.toFixed(0)}%`
+      );
+    }
+  },
+
+  (error) => {
+    console.error(
+      "================================="
+    );
+
+    console.error(
+      "VRM LOAD ERROR"
+    );
+
+    console.error(error);
+
+    console.error(
+      "================================="
+    );
+  }
+);
 
 // ============================================================
 // HUMANOID BONES
@@ -98,12 +180,15 @@ let attentionTarget = {
 
 const bones = {};
 
-const REQUIRED_BONES = [
-  "head",
-  "neck",
+const restRotations = {};
+
+const BONE_NAMES = [
+  "hips",
   "spine",
   "chest",
   "upperChest",
+  "neck",
+  "head",
 
   "leftShoulder",
   "leftUpperArm",
@@ -116,1289 +201,1323 @@ const REQUIRED_BONES = [
   "rightHand",
 ];
 
-
-// ============================================================
-// ANIMATION POSES
-// ============================================================
-
-/*
-    Important:
-
-    These are normalized humanoid rotations.
-
-    Normalized VRM bones are standardized by three-vrm,
-    which makes this much more reliable than manipulating
-    the raw model bones directly.
-*/
-
-
-const POSES = {
-
-  // --------------------------------------------------------
-  // PROFESSIONAL RECEPTIONIST
-  // --------------------------------------------------------
-
-  idle: {
-
-    leftShoulder: { x: 0.00, y: 0.00, z: -0.05 },
-    leftUpperArm: { x: 0.00, y: 0.00, z: -0.90 },
-    leftLowerArm: { x: 0.00, y: 0.00, z: -0.18 },
-    leftHand: { x: 0.00, y: 0.00, z: 0.00 },
-
-    rightShoulder: { x: 0.00, y: 0.00, z: 0.05 },
-    rightUpperArm: { x: 0.00, y: 0.00, z: 0.90 },
-    rightLowerArm: { x: 0.00, y: 0.00, z: 0.18 },
-    rightHand: { x: 0.00, y: 0.00, z: 0.00 },
-
-    spine: { x: 0.00, y: 0.00, z: 0.00 },
-    chest: { x: 0.00, y: 0.00, z: 0.00 },
-    upperChest: { x: 0.00, y: 0.00, z: 0.00 },
-
-    head: { x: 0.00, y: 0.00, z: 0.00 },
-    neck: { x: 0.00, y: 0.00, z: 0.00 },
-  },
-
-
-  // --------------------------------------------------------
-  // LISTENING
-  // --------------------------------------------------------
-
-  listening: {
-
-    leftShoulder: { x: 0.00, y: 0.00, z: -0.12 },
-    leftUpperArm: { x: 0.00, y: 0.00, z: -0.82 },
-    leftLowerArm: { x: -0.18, y: 0.00, z: -0.28 },
-
-    rightShoulder: { x: 0.00, y: 0.00, z: 0.12 },
-    rightUpperArm: { x: 0.00, y: 0.00, z: 0.82 },
-    rightLowerArm: { x: -0.18, y: 0.00, z: 0.28 },
-
-    spine: { x: 0.015, y: 0.00, z: 0.00 },
-    chest: { x: 0.015, y: 0.00, z: 0.00 },
-
-    head: { x: -0.025, y: 0.00, z: 0.00 },
-    neck: { x: 0.015, y: 0.00, z: 0.00 },
-  },
-
-
-  // --------------------------------------------------------
-  // THINKING
-  // --------------------------------------------------------
-
-  thinking: {
-
-    leftShoulder: { x: 0.00, y: 0.00, z: -0.08 },
-    leftUpperArm: { x: 0.00, y: 0.00, z: -0.90 },
-    leftLowerArm: { x: -0.30, y: 0.00, z: -0.35 },
-
-    rightShoulder: { x: 0.00, y: 0.00, z: 0.08 },
-    rightUpperArm: { x: 0.00, y: 0.00, z: 0.90 },
-    rightLowerArm: { x: -0.30, y: 0.00, z: 0.35 },
-
-    spine: { x: 0.02, y: 0.00, z: 0.00 },
-    chest: { x: 0.02, y: 0.00, z: 0.00 },
-
-    head: { x: 0.10, y: 0.12, z: 0.02 },
-    neck: { x: -0.04, y: 0.04, z: 0.00 },
-  },
-
-
-  // --------------------------------------------------------
-  // SPEAKING
-  // --------------------------------------------------------
-
-  speaking: {
-
-    leftShoulder: { x: 0.00, y: 0.00, z: -0.08 },
-    leftUpperArm: { x: 0.00, y: 0.00, z: -0.90 },
-    leftLowerArm: { x: -0.15, y: 0.00, z: -0.22 },
-
-    rightShoulder: { x: 0.00, y: 0.00, z: 0.08 },
-    rightUpperArm: { x: 0.00, y: 0.00, z: 0.90 },
-    rightLowerArm: { x: -0.15, y: 0.00, z: 0.22 },
-
-    spine: { x: 0.00, y: 0.015, z: 0.00 },
-    chest: { x: 0.00, y: 0.015, z: 0.00 },
-
-    head: { x: -0.015, y: 0.00, z: 0.00 },
-    neck: { x: 0.00, y: 0.00, z: 0.00 },
-  },
-
-
-  // --------------------------------------------------------
-  // NAMASTE
-  // --------------------------------------------------------
-
-  namaste: {
-
-    leftShoulder: { x: 0.00, y: 0.00, z: -0.35 },
-
-    leftUpperArm: {
-      x: 0.00,
-      y: 0.00,
-      z: -1.45,
-    },
-
-    leftLowerArm: {
-      x: -0.95,
-      y: 0.00,
-      z: -0.85,
-    },
-
-    leftHand: {
-      x: 0.00,
-      y: 0.00,
-      z: -0.30,
-    },
-
-
-    rightShoulder: { x: 0.00, y: 0.00, z: 0.35 },
-
-    rightUpperArm: {
-      x: 0.00,
-      y: 0.00,
-      z: 1.45,
-    },
-
-    rightLowerArm: {
-      x: -0.95,
-      y: 0.00,
-      z: 0.85,
-    },
-
-    rightHand: {
-      x: 0.00,
-      y: 0.00,
-      z: 0.30,
-    },
-
-
-    spine: {
-      x: 0.04,
-      y: 0.00,
-      z: 0.00,
-    },
-
-    chest: {
-      x: 0.04,
-      y: 0.00,
-      z: 0.00,
-    },
-
-    head: {
-      x: 0.20,
-      y: 0.00,
-      z: 0.00,
-    },
-
-    neck: {
-      x: 0.05,
-      y: 0.00,
-      z: 0.00,
-    },
-  },
-
-
-  // --------------------------------------------------------
-  // VISITOR DETECTED
-  // --------------------------------------------------------
-
-  visitor_detected: {
-
-    leftShoulder: { x: 0.00, y: 0.00, z: -0.05 },
-    leftUpperArm: { x: 0.00, y: 0.00, z: -0.90 },
-    leftLowerArm: { x: 0.00, y: 0.00, z: -0.18 },
-
-    rightShoulder: { x: 0.00, y: 0.00, z: 0.05 },
-    rightUpperArm: { x: 0.00, y: 0.00, z: 0.90 },
-    rightLowerArm: { x: 0.00, y: 0.00, z: 0.18 },
-
-    head: { x: 0.00, y: 0.12, z: 0.00 },
-    neck: { x: 0.00, y: 0.05, z: 0.00 },
-
-    spine: { x: 0.00, y: 0.02, z: 0.00 },
-    chest: { x: 0.00, y: 0.02, z: 0.00 },
-  },
-
-
-  // --------------------------------------------------------
-  // VISITOR LEFT
-  // --------------------------------------------------------
-
-  visitor_left: {
-
-    leftShoulder: { x: 0.00, y: 0.00, z: -0.05 },
-    leftUpperArm: { x: 0.00, y: 0.00, z: -0.90 },
-    leftLowerArm: { x: 0.00, y: 0.00, z: -0.18 },
-
-    rightShoulder: { x: 0.00, y: 0.00, z: 0.05 },
-    rightUpperArm: { x: 0.00, y: 0.00, z: 0.90 },
-    rightLowerArm: { x: 0.00, y: 0.00, z: 0.18 },
-
-    head: { x: 0.00, y: -0.08, z: 0.00 },
-    neck: { x: 0.00, y: -0.03, z: 0.00 },
-
-    spine: { x: 0.00, y: -0.015, z: 0.00 },
-    chest: { x: 0.00, y: -0.015, z: 0.00 },
-  },
-};
-
-
-// ============================================================
-// CURRENT / TARGET BONE ROTATIONS
-// ============================================================
-
-const currentPose = {};
-const targetPose = {};
-
-
-// ============================================================
-// HELPER
-// ============================================================
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-
-function lerpAngle(current, target, amount) {
-  return current + (target - current) * amount;
-}
-
-
-function createRotation(data = {}) {
-  return {
-    x: data.x || 0,
-    y: data.y || 0,
-    z: data.z || 0,
-  };
-}
-
-
-// ============================================================
-// FIND BONE
-// ============================================================
-
-function getBone(name) {
-
-  if (!vrm || !vrm.humanoid) {
-    return null;
-  }
-
-  const bone = vrm.humanoid.getNormalizedBoneNode(name);
-
-  return bone || null;
-}
-
-
-// ============================================================
-// BUILD BONE MAP
-// ============================================================
-
-function initializeBones() {
-
-  console.log("");
-  console.log("==========================================");
-  console.log("VRM HUMANOID BONE DIAGNOSTICS");
-  console.log("==========================================");
-
-  for (const name of REQUIRED_BONES) {
-
-    const bone = getBone(name);
-
-    bones[name] = bone;
-
-    if (bone) {
-
-      console.log(`✓ ${name}`);
-
-      currentPose[name] = createRotation({
-        x: bone.rotation.x,
-        y: bone.rotation.y,
-        z: bone.rotation.z,
-      });
-
-      targetPose[name] = createRotation({
-        x: bone.rotation.x,
-        y: bone.rotation.y,
-        z: bone.rotation.z,
-      });
-
-    } else {
-
-      console.warn(`✗ MISSING: ${name}`);
+// ------------------------------------------------------------
+// Get normalized bone
+// ------------------------------------------------------------
+
+function getNormalizedBone(name) {
+  try {
+    if (
+      vrm &&
+      vrm.humanoid &&
+      typeof vrm.humanoid.getNormalizedBoneNode === "function"
+    ) {
+      return vrm.humanoid.getNormalizedBoneNode(name);
     }
-  }
-
-  console.log("==========================================");
-  console.log("");
-
-
-  const availableCount = Object.values(bones)
-    .filter(Boolean)
-    .length;
-
-  console.log(
-    `Humanoid bones available: ${availableCount}/${REQUIRED_BONES.length}`
-  );
-
-
-  if (availableCount < 8) {
-
-    console.error(
-      "WARNING: This VRM has too few humanoid bones mapped."
-    );
-
-  } else {
-
-    console.log(
-      "VRM humanoid mapping looks usable."
+  } catch (error) {
+    console.warn(
+      `Normalized bone failed: ${name}`,
+      error
     );
   }
+
+  return null;
 }
 
+// ------------------------------------------------------------
+// Get raw bone fallback
+// ------------------------------------------------------------
 
-// ============================================================
-// SET TARGET POSE
-// ============================================================
+function getRawBone(name) {
+  try {
+    if (
+      vrm &&
+      vrm.humanoid &&
+      typeof vrm.humanoid.getRawBoneNode === "function"
+    ) {
+      return vrm.humanoid.getRawBoneNode(name);
+    }
+  } catch (error) {
+    console.warn(
+      `Raw bone failed: ${name}`,
+      error
+    );
+  }
 
-function setTargetPose(poseName) {
+  return null;
+}
 
-  const pose = POSES[poseName];
+// ------------------------------------------------------------
+// Setup
+// ------------------------------------------------------------
 
-  if (!pose) {
-    console.warn(`Unknown pose: ${poseName}`);
+function setupHumanoid() {
+  if (!vrm?.humanoid) {
+    console.error(
+      "This VRM does not contain a humanoid."
+    );
+
     return;
   }
 
+  for (const name of BONE_NAMES) {
+    let bone = getNormalizedBone(name);
 
-  for (const boneName of Object.keys(currentPose)) {
+    let source = "normalized";
 
-    const target = pose[boneName];
-
-    if (!target) {
-      continue;
+    if (!bone) {
+      bone = getRawBone(name);
+      source = "raw";
     }
-
-    targetPose[boneName] = createRotation(target);
-  }
-}
-
-
-// ============================================================
-// SMOOTH POSE
-// ============================================================
-
-function updatePose(delta) {
-
-  const speed = 7.0;
-
-  const amount = clamp(
-    delta * speed,
-    0,
-    1
-  );
-
-
-  for (const boneName of Object.keys(bones)) {
-
-    const bone = bones[boneName];
 
     if (!bone) {
       continue;
     }
 
+    bones[name] = bone;
 
-    const current = currentPose[boneName];
+    restRotations[name] =
+      bone.quaternion.clone();
 
-    const target = targetPose[boneName];
+    console.log(
+      `[BONE] ${name} -> ${source}`
+    );
+  }
+}
 
-    if (!current || !target) {
-      continue;
+// ============================================================
+// DIAGNOSTICS
+// ============================================================
+
+function printAvatarDiagnostics() {
+  console.log("");
+  console.log("========== AVATAR DIAGNOSTICS ==========");
+
+  for (const name of BONE_NAMES) {
+    if (bones[name]) {
+      console.log(`✓ ${name}`);
+    } else {
+      console.warn(`✗ ${name} NOT FOUND`);
     }
-
-
-    current.x = lerpAngle(
-      current.x,
-      target.x,
-      amount
-    );
-
-    current.y = lerpAngle(
-      current.y,
-      target.y,
-      amount
-    );
-
-    current.z = lerpAngle(
-      current.z,
-      target.z,
-      amount
-    );
-
-
-    bone.rotation.set(
-      current.x,
-      current.y,
-      current.z
-    );
   }
 
-
-  /*
-      IMPORTANT:
-
-      This updates normalized humanoid bones -> raw VRM bones.
-
-      We intentionally do NOT call:
-
-          vrm.update(delta)
-
-      because that would also update SpringBone physics,
-      which causes the clothing/hair movement we do not want.
-  */
-
-  if (vrm && vrm.humanoid) {
-    vrm.humanoid.update();
-  }
-}
-
-
-// ============================================================
-// LOOK AT VISITOR
-// ============================================================
-
-function updateVisitorAttention(delta) {
-
-  if (!vrm || !vrm.lookAt) {
-    return;
-  }
-
-
-  const targetPosition = new THREE.Vector3(
-    attentionTarget.x,
-    attentionTarget.y,
-    attentionTarget.z
+  console.log(
+    "Total usable bones:",
+    Object.keys(bones).length
   );
 
-
-  visitorTarget.position.lerp(
-    targetPosition,
-    clamp(delta * 4.0, 0, 1)
+  console.log(
+    "Expression manager:",
+    !!vrm?.expressionManager
   );
 
+  console.log(
+    "LookAt:",
+    !!vrm?.lookAt
+  );
 
-  vrm.lookAt.target = visitorTarget;
-
-  vrm.lookAt.autoUpdate = true;
-
-  vrm.lookAt.update(delta);
+  console.log("========================================");
 }
-
-
-// ============================================================
-// HEAD NATURAL MOVEMENT
-// ============================================================
-
-function updateNaturalHeadMovement(time) {
-
-  const head = bones.head;
-  const neck = bones.neck;
-
-  if (!head) {
-    return;
-  }
-
-
-  let movementAmount = 0.015;
-
-  if (currentState === "speaking") {
-    movementAmount = 0.025;
-  }
-
-  if (currentState === "thinking") {
-    movementAmount = 0.035;
-  }
-
-  if (currentState === "listening") {
-    movementAmount = 0.018;
-  }
-
-
-  const movementX =
-    Math.sin(time * 1.25) * movementAmount;
-
-  const movementZ =
-    Math.sin(time * 0.85) * movementAmount * 0.5;
-
-
-  head.rotation.x += movementX;
-  head.rotation.z += movementZ;
-
-
-  if (neck) {
-
-    neck.rotation.x += movementX * 0.35;
-    neck.rotation.z += movementZ * 0.35;
-  }
-}
-
-
-// ============================================================
-// THINKING MOVEMENT
-// ============================================================
-
-function updateThinkingMovement(time) {
-
-  if (currentState !== "thinking") {
-    return;
-  }
-
-
-  const head = bones.head;
-
-  if (!head) {
-    return;
-  }
-
-
-  const thinkingMovement =
-    Math.sin(time * 1.7) * 0.05;
-
-
-  head.rotation.y += thinkingMovement;
-}
-
-
-// ============================================================
-// SPEAKING MOVEMENT
-// ============================================================
-
-function updateSpeakingMovement(time) {
-
-  if (currentState !== "speaking") {
-    return;
-  }
-
-
-  const chest = bones.chest;
-
-  if (!chest) {
-    return;
-  }
-
-
-  const movement =
-    Math.sin(time * 3.0) * 0.018;
-
-
-  chest.rotation.y += movement;
-}
-
 
 // ============================================================
 // EXPRESSIONS
 // ============================================================
 
-function setExpression(name, value) {
+let expressionManager = null;
 
-  if (!vrm || !vrm.expressionManager) {
-    return;
-  }
+function setupExpressions() {
+  expressionManager =
+    vrm?.expressionManager || null;
 
-
-  try {
-
-    vrm.expressionManager.setValue(
-      name,
-      clamp(value, 0, 1)
-    );
-
-  } catch (error) {
-
-    // Expression may not exist on this VRM.
-  }
-}
-
-
-// ============================================================
-// EXPRESSION AVAILABILITY
-// ============================================================
-
-function inspectExpressions() {
-
-  if (!vrm || !vrm.expressionManager) {
-
+  if (!expressionManager) {
     console.warn(
-      "This VRM has no expression manager."
-    );
-
-    return;
-  }
-
-
-  console.log("");
-  console.log("==========================================");
-  console.log("VRM EXPRESSIONS");
-  console.log("==========================================");
-
-
-  try {
-
-    const expressions =
-      vrm.expressionManager.expressions;
-
-    if (expressions) {
-
-      expressions.forEach(
-        (expression, index) => {
-
-          console.log(
-            `[${index}]`,
-            expression.name
-          );
-        }
-      );
-    }
-
-  } catch (error) {
-
-    console.warn(
-      "Unable to inspect expressions."
+      "No VRM expression manager found."
     );
   }
-
-
-  console.log("==========================================");
 }
 
-
 // ============================================================
-// BLINKING
+// STATE
 // ============================================================
 
-function updateBlink(time) {
+const STATES = {
+  IDLE: "idle",
+  VISITOR_DETECTED: "visitor_detected",
+  GREETING: "greeting",
+  LISTENING: "listening",
+  THINKING: "thinking",
+  SPEAKING: "speaking",
+  VISITOR_LEFT: "visitor_left",
+};
 
-  if (time < nextBlinkTime) {
+let currentState = STATES.IDLE;
+
+let stateChangedAt = performance.now();
+
+function setAvatarState(state) {
+  if (!state) {
     return;
   }
 
-
-  let blinkStart = time;
-
-
-  function performBlink() {
-
-    const elapsed = performance.now() / 1000 - blinkStart;
-
-    if (elapsed < 0.08) {
-
-      const value = elapsed / 0.08;
-
-      setExpression("blink", value);
-
-    } else if (elapsed < 0.16) {
-
-      const value =
-        1 - ((elapsed - 0.08) / 0.08);
-
-      setExpression("blink", value);
-
-    } else {
-
-      setExpression("blink", 0);
-
-      nextBlinkTime =
-        time +
-        2.5 +
-        Math.random() * 4.0;
-
-      return;
-    }
-
-
-    requestAnimationFrame(performBlink);
-  }
-
-
-  performBlink();
-}
-
-
-// ============================================================
-// MOUTH ANIMATION
-// ============================================================
-
-function updateMouth(time) {
-
-  if (currentState !== "speaking") {
-
-    setExpression("aa", 0);
-    setExpression("ih", 0);
-    setExpression("ou", 0);
-    setExpression("ee", 0);
-    setExpression("oh", 0);
-
+  if (currentState === state) {
     return;
   }
-
-
-  const wave =
-    Math.abs(Math.sin(time * 7.0));
-
-
-  const wave2 =
-    Math.abs(Math.sin(time * 4.5));
-
-
-  setExpression(
-    "aa",
-    wave * 0.55
-  );
-
-  setExpression(
-    "ih",
-    wave2 * 0.20
-  );
-
-  setExpression(
-    "ou",
-    Math.abs(Math.sin(time * 5.5)) * 0.15
-  );
-}
-
-
-// ============================================================
-// SMOOTH NAMASTE ANIMATION
-// ============================================================
-
-function updateNamaste(time, delta) {
-
-  if (currentState !== "greeting") {
-
-    namasteProgress = 0;
-
-    return;
-  }
-
-
-  /*
-      0 -> 0.8 sec
-      Arms move to Namaste + head bow.
-
-      0.8 -> 2.0 sec
-      Hold Namaste.
-
-      2.0 -> 2.8 sec
-      Return to formal position.
-  */
-
-
-  const greetingDuration = 2.8;
-
-  namasteProgress += delta;
-
-
-  if (namasteProgress <= 0.8) {
-
-    setTargetPose("namaste");
-
-  } else if (namasteProgress <= 2.0) {
-
-    setTargetPose("namaste");
-
-  } else if (namasteProgress <= greetingDuration) {
-
-    setTargetPose("idle");
-
-  } else {
-
-    currentState = "listening";
-
-    targetState = "listening";
-
-    setTargetPose("listening");
-
-    updateStateUI();
-  }
-}
-
-
-// ============================================================
-// STATE MANAGEMENT
-// ============================================================
-
-function setState(state) {
-
-  const validStates = [
-    "idle",
-    "visitor_detected",
-    "greeting",
-    "listening",
-    "thinking",
-    "speaking",
-    "visitor_left",
-  ];
-
-
-  if (!validStates.includes(state)) {
-
-    console.warn(
-      `Invalid avatar state: ${state}`
-    );
-
-    return;
-  }
-
-
-  currentState = state;
-  targetState = state;
-
-
-  if (state === "greeting") {
-
-    namasteProgress = 0;
-
-    setTargetPose("namaste");
-
-  } else {
-
-    setTargetPose(state);
-  }
-
-
-  updateStateUI();
 
   console.log(
-    `Avatar state -> ${state}`
+    `[AVATAR] ${currentState} -> ${state}`
+  );
+
+  currentState = state;
+
+  stateChangedAt = performance.now();
+}
+
+// ============================================================
+// ROTATION HELPERS
+// ============================================================
+
+const tempEuler = new THREE.Euler();
+
+const tempQuaternion = new THREE.Quaternion();
+
+const desiredQuaternion =
+  new THREE.Quaternion();
+
+const FORMAL_ARM_ROTATIONS = {
+  leftUpperArm: [0, 0, -0.9],
+  rightUpperArm: [0, 0, 0.9],
+};
+
+function applyInitialFormalArms() {
+  for (const [name, rotation] of Object.entries(
+    FORMAL_ARM_ROTATIONS
+  )) {
+    const bone = bones[name];
+    const rest = restRotations[name];
+
+    if (!bone || !rest) {
+      continue;
+    }
+
+    const [x, y, z] = rotation;
+    const offset = new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(x, y, z)
+    );
+
+    bone.quaternion.copy(rest).multiply(offset);
+  }
+
+  if (typeof vrm?.humanoid?.update === "function") {
+    vrm.humanoid.update();
+  }
+}
+
+function setBoneTarget(
+  name,
+  x,
+  y,
+  z,
+  delta,
+  speed = 5
+) {
+  const bone = bones[name];
+
+  const rest = restRotations[name];
+
+  if (!bone || !rest) {
+    return;
+  }
+
+  tempEuler.set(x, y, z);
+
+  tempQuaternion.setFromEuler(
+    tempEuler
+  );
+
+  desiredQuaternion
+    .copy(rest)
+    .multiply(tempQuaternion);
+
+  const interpolation =
+    1 - Math.exp(-speed * delta);
+
+  bone.quaternion.slerp(
+    desiredQuaternion,
+    interpolation
   );
 }
 
-
 // ============================================================
-// STATE UI
+// FORMAL RESTORE
 // ============================================================
 
-function updateStateUI() {
+function formalPosture(delta) {
+  // Body
+  setBoneTarget(
+    "hips",
+    0,
+    0,
+    0,
+    delta,
+    5
+  );
 
-  if (!stateLabel) {
-    return;
-  }
+  setBoneTarget(
+    "spine",
+    0,
+    0,
+    0,
+    delta,
+    5
+  );
 
+  setBoneTarget(
+    "chest",
+    0,
+    0,
+    0,
+    delta,
+    5
+  );
 
-  stateLabel.textContent =
-    currentState.replaceAll("_", " ").toUpperCase();
+  setBoneTarget(
+    "upperChest",
+    0,
+    0,
+    0,
+    delta,
+    5
+  );
 
+  // Head
+  setBoneTarget(
+    "neck",
+    0,
+    0,
+    0,
+    delta,
+    5
+  );
 
-  if (!statusElement) {
-    return;
-  }
+  setBoneTarget(
+    "head",
+    0,
+    0,
+    0,
+    delta,
+    5
+  );
 
+  // Arms back to formal position.
+  setBoneTarget(
+    "leftShoulder",
+    0,
+    0,
+    0,
+    delta,
+    5
+  );
 
-  const messages = {
+  setBoneTarget(
+    "rightShoulder",
+    0,
+    0,
+    0,
+    delta,
+    5
+  );
 
-    idle:
-      "Ready to welcome visitors.",
+  setBoneTarget(
+    "leftUpperArm",
+    0,
+    0,
+    -0.9,
+    delta,
+    5
+  );
 
-    visitor_detected:
-      "Visitor detected. Paying attention.",
+  setBoneTarget(
+    "rightUpperArm",
+    0,
+    0,
+    0.9,
+    delta,
+    5
+  );
 
-    greeting:
-      "Namaste. Welcome to our reception.",
+  setBoneTarget(
+    "leftLowerArm",
+    0,
+    0,
+    0,
+    delta,
+    5
+  );
 
-    listening:
-      "Listening to the visitor.",
+  setBoneTarget(
+    "rightLowerArm",
+    0,
+    0,
+    0,
+    delta,
+    5
+  );
 
-    thinking:
-      "Thinking about the request.",
+  setBoneTarget(
+    "leftHand",
+    0,
+    0,
+    0,
+    delta,
+    5
+  );
 
-    speaking:
-      "Speaking with the visitor.",
-
-    visitor_left:
-      "Visitor leaving. Returning to standby.",
-  };
-
-
-  statusElement.textContent =
-    messages[currentState] ||
-    "AI Receptionist";
-
-
-  statusElement.dataset.type = "ready";
+  setBoneTarget(
+    "rightHand",
+    0,
+    0,
+    0,
+    delta,
+    5
+  );
 }
 
+// ============================================================
+// IDLE
+// ============================================================
+
+function animateIdle(time, delta) {
+  formalPosture(delta);
+
+  // Natural breathing.
+  const breathing =
+    Math.sin(time * 1.8) * 0.015;
+
+  setBoneTarget(
+    "chest",
+    breathing,
+    Math.sin(time * 0.7) * 0.012,
+    0,
+    delta,
+    3
+  );
+
+  // Small natural head movement.
+  setBoneTarget(
+    "head",
+    Math.sin(time * 0.65) * 0.018,
+    Math.sin(time * 0.45) * 0.025,
+    Math.sin(time * 0.4) * 0.01,
+    delta,
+    3
+  );
+}
+
+// ============================================================
+// VISITOR ATTENTION
+// ============================================================
+
+function animateVisitorDetected(
+  time,
+  delta
+) {
+  formalPosture(delta);
+
+  // Slightly raise attention toward visitor.
+  setBoneTarget(
+    "neck",
+    -0.025,
+    Math.sin(time * 0.5) * 0.015,
+    0,
+    delta,
+    6
+  );
+
+  setBoneTarget(
+    "head",
+    -0.055,
+    Math.sin(time * 0.8) * 0.025,
+    0,
+    delta,
+    6
+  );
+
+  // Slight professional body orientation.
+  setBoneTarget(
+    "chest",
+    0.015,
+    Math.sin(time * 0.5) * 0.015,
+    0,
+    delta,
+    5
+  );
+}
+
+// ============================================================
+// NAMASKAR
+// ============================================================
+
+function animateNamaskar(
+  elapsed,
+  time,
+  delta
+) {
+  // Start from formal posture.
+  formalPosture(delta);
+
+  // ----------------------------------------------------------
+  // Phase 1:
+  // Hands begin coming toward chest.
+  // ----------------------------------------------------------
+
+  if (elapsed < 0.8) {
+    const progress =
+      THREE.MathUtils.clamp(
+        elapsed / 0.8,
+        0,
+        1
+      );
+
+    // Smooth ease.
+    const p =
+      progress *
+      progress *
+      (3 - 2 * progress);
+
+    setBoneTarget(
+      "leftUpperArm",
+      THREE.MathUtils.lerp(
+        0,
+        -0.9,
+        p
+      ),
+      THREE.MathUtils.lerp(
+        0,
+        0.25,
+        p
+      ),
+      THREE.MathUtils.lerp(
+        -0.9,
+        -0.25,
+        p
+      ),
+      delta,
+      7
+    );
+
+    setBoneTarget(
+      "rightUpperArm",
+      THREE.MathUtils.lerp(
+        0,
+        -0.9,
+        p
+      ),
+      THREE.MathUtils.lerp(
+        0,
+        -0.25,
+        p
+      ),
+      THREE.MathUtils.lerp(
+        0.9,
+        0.25,
+        p
+      ),
+      delta,
+      7
+    );
+
+    setBoneTarget(
+      "leftLowerArm",
+      THREE.MathUtils.lerp(
+        0,
+        -1.1,
+        p
+      ),
+      0,
+      THREE.MathUtils.lerp(
+        0,
+        -0.25,
+        p
+      ),
+      delta,
+      7
+    );
+
+    setBoneTarget(
+      "rightLowerArm",
+      THREE.MathUtils.lerp(
+        0,
+        -1.1,
+        p
+      ),
+      0,
+      THREE.MathUtils.lerp(
+        0,
+        0.25,
+        p
+      ),
+      delta,
+      7
+    );
+  }
+
+  // ----------------------------------------------------------
+  // Phase 2:
+  // Namaskar pose + respectful bow.
+  // ----------------------------------------------------------
+
+  else if (elapsed < 2.2) {
+    const bow =
+      Math.sin(
+        ((elapsed - 0.8) / 1.4) *
+        Math.PI
+      ) * 0.12;
+
+    // Hands together near chest.
+    setBoneTarget(
+      "leftUpperArm",
+      -0.9,
+      0.25,
+      -0.25,
+      delta,
+      8
+    );
+
+    setBoneTarget(
+      "rightUpperArm",
+      -0.9,
+      -0.25,
+      0.25,
+      delta,
+      8
+    );
+
+    setBoneTarget(
+      "leftLowerArm",
+      -1.1,
+      0,
+      -0.25,
+      delta,
+      8
+    );
+
+    setBoneTarget(
+      "rightLowerArm",
+      -1.1,
+      0,
+      0.25,
+      delta,
+      8
+    );
+
+    // Respectful small head bow.
+    setBoneTarget(
+      "neck",
+      bow,
+      0,
+      0,
+      delta,
+      8
+    );
+
+    setBoneTarget(
+      "head",
+      bow * 1.3,
+      0,
+      0,
+      delta,
+      8
+    );
+  }
+
+  // ----------------------------------------------------------
+  // Phase 3:
+  // Hold Namaskar briefly.
+  // ----------------------------------------------------------
+
+  else if (elapsed < 3.1) {
+    setBoneTarget(
+      "leftUpperArm",
+      -0.9,
+      0.25,
+      -0.25,
+      delta,
+      8
+    );
+
+    setBoneTarget(
+      "rightUpperArm",
+      -0.9,
+      -0.25,
+      0.25,
+      delta,
+      8
+    );
+
+    setBoneTarget(
+      "leftLowerArm",
+      -1.1,
+      0,
+      -0.25,
+      delta,
+      8
+    );
+
+    setBoneTarget(
+      "rightLowerArm",
+      -1.1,
+      0,
+      0.25,
+      delta,
+      8
+    );
+
+    setBoneTarget(
+      "head",
+      0.035,
+      0,
+      0,
+      delta,
+      6
+    );
+  }
+
+  // ----------------------------------------------------------
+  // Phase 4:
+  // Hands return to formal position.
+  // ----------------------------------------------------------
+
+  else {
+    formalPosture(delta);
+
+    setBoneTarget(
+      "head",
+      Math.sin(time * 0.8) * 0.01,
+      0,
+      0,
+      delta,
+      5
+    );
+  }
+}
+
+// ============================================================
+// LISTENING
+// ============================================================
+
+function animateListening(
+  time,
+  delta
+) {
+  formalPosture(delta);
+
+  // Slight forward attention.
+  setBoneTarget(
+    "neck",
+    -0.025,
+    0,
+    0,
+    delta,
+    5
+  );
+
+  // Natural small nod.
+  setBoneTarget(
+    "head",
+    -0.025 +
+    Math.sin(time * 1.7) * 0.025,
+    Math.sin(time * 0.8) * 0.025,
+    0,
+    delta,
+    5
+  );
+
+  // Slight chest attention.
+  setBoneTarget(
+    "chest",
+    0.012,
+    0,
+    0,
+    delta,
+    4
+  );
+}
+
+// ============================================================
+// THINKING
+// ============================================================
+
+function animateThinking(
+  time,
+  delta
+) {
+  formalPosture(delta);
+
+  // Thoughtful head tilt.
+  setBoneTarget(
+    "head",
+    -0.035,
+    0.02,
+    Math.sin(time * 0.7) * 0.09,
+    delta,
+    5
+  );
+
+  setBoneTarget(
+    "neck",
+    0,
+    0,
+    Math.sin(time * 0.6) * 0.035,
+    delta,
+    4
+  );
+
+  // Small body shift.
+  setBoneTarget(
+    "chest",
+    0,
+    Math.sin(time * 0.5) * 0.02,
+    0,
+    delta,
+    4
+  );
+}
+
+// ============================================================
+// SPEAKING
+// ============================================================
+
+function animateSpeaking(
+  time,
+  delta
+) {
+  formalPosture(delta);
+
+  // Natural conversational head movement.
+  setBoneTarget(
+    "neck",
+    Math.sin(time * 2.2) * 0.018,
+    Math.sin(time * 1.3) * 0.035,
+    Math.sin(time * 1.1) * 0.015,
+    delta,
+    6
+  );
+
+  setBoneTarget(
+    "head",
+    Math.sin(time * 3.0) * 0.025,
+    Math.sin(time * 1.7) * 0.035,
+    Math.sin(time * 1.4) * 0.018,
+    delta,
+    6
+  );
+
+  // Small speaking body movement.
+  setBoneTarget(
+    "chest",
+    Math.sin(time * 2.8) * 0.018,
+    Math.sin(time * 1.5) * 0.012,
+    0,
+    delta,
+    5
+  );
+}
+
+// ============================================================
+// VISITOR LEFT
+// ============================================================
+
+function animateVisitorLeft(
+  time,
+  delta
+) {
+  formalPosture(delta);
+
+  // Small respectful farewell head movement.
+  setBoneTarget(
+    "head",
+    Math.sin(time * 2.2) * 0.025,
+    Math.sin(time * 1.3) * 0.04,
+    0,
+    delta,
+    5
+  );
+}
+
+// ============================================================
+// BODY STATE UPDATE
+// ============================================================
+
+function updateBody(
+  time,
+  delta
+) {
+  const elapsed =
+    (performance.now() -
+      stateChangedAt) /
+    1000;
+
+  switch (currentState) {
+    case STATES.IDLE:
+      animateIdle(time, delta);
+      break;
+
+    case STATES.VISITOR_DETECTED:
+      animateVisitorDetected(
+        time,
+        delta
+      );
+      break;
+
+    case STATES.GREETING:
+      animateNamaskar(
+        elapsed,
+        time,
+        delta
+      );
+      break;
+
+    case STATES.LISTENING:
+      animateListening(
+        time,
+        delta
+      );
+      break;
+
+    case STATES.THINKING:
+      animateThinking(
+        time,
+        delta
+      );
+      break;
+
+    case STATES.SPEAKING:
+      animateSpeaking(
+        time,
+        delta
+      );
+      break;
+
+    case STATES.VISITOR_LEFT:
+      animateVisitorLeft(
+        time,
+        delta
+      );
+      break;
+
+    default:
+      formalPosture(delta);
+  }
+}
+
+// ============================================================
+// FACE
+// ============================================================
+
+function updateFace(time) {
+  if (!expressionManager) {
+    return;
+  }
+
+  // ----------------------------------------------------------
+  // Natural blinking
+  // ----------------------------------------------------------
+
+  const blinkCycle =
+    time % 4.8;
+
+  let blink = 0;
+
+  if (
+    blinkCycle > 4.35 &&
+    blinkCycle < 4.50
+  ) {
+    blink = 1;
+  }
+
+  expressionManager.setValue(
+    "blink",
+    blink
+  );
+
+  // ----------------------------------------------------------
+  // Mouth
+  // ----------------------------------------------------------
+
+  let mouth = 0;
+
+  if (currentState === STATES.SPEAKING) {
+    mouth =
+      0.25 +
+      Math.abs(
+        Math.sin(time * 9)
+      ) *
+      0.55;
+  }
+
+  expressionManager.setValue(
+    "aa",
+    mouth
+  );
+
+  expressionManager.setValue(
+    "ih",
+    mouth * 0.35
+  );
+
+  expressionManager.setValue(
+    "ou",
+    mouth * 0.25
+  );
+
+  expressionManager.setValue(
+    "ee",
+    mouth * 0.20
+  );
+
+  expressionManager.update();
+}
+
+// ============================================================
+// EYE / FACE ATTENTION
+// ============================================================
+
+function updateLookAt(time, delta) {
+  if (!vrm?.lookAt) {
+    return;
+  }
+
+  let x = 0;
+  let y = 1.45;
+
+  switch (currentState) {
+    case STATES.IDLE:
+      x = Math.sin(time * 0.25) * 0.05;
+      y = 1.45;
+      break;
+
+    case STATES.VISITOR_DETECTED:
+      x = 0;
+      y = 1.50;
+      break;
+
+    case STATES.GREETING:
+      x = 0;
+      y = 1.48;
+      break;
+
+    case STATES.LISTENING:
+      x = Math.sin(time * 0.7) * 0.04;
+      y = 1.48;
+      break;
+
+    case STATES.THINKING:
+      x = Math.sin(time * 0.35) * 0.10;
+      y = 1.55;
+      break;
+
+    case STATES.SPEAKING:
+      x = Math.sin(time * 0.9) * 0.04;
+      y = 1.47;
+      break;
+
+    case STATES.VISITOR_LEFT:
+      x = Math.sin(time * 0.5) * 0.06;
+      y = 1.40;
+      break;
+
+    default:
+      break;
+  }
+
+  lookTarget.position.x = x;
+  lookTarget.position.y = y;
+
+  vrm.lookAt.update(delta);
+}
+
+// ============================================================
+// IMPORTANT VRM UPDATE POLICY
+// ============================================================
+//
+// DO NOT:
+//
+//     vrm.update(delta)
+//
+// because that can update SpringBone systems.
+//
+// We intentionally update:
+//
+//     humanoid
+//     lookAt
+//     expressionManager
+//
+// Clothing remains stable.
+// ============================================================
+
+function updateHumanoid() {
+  if (!vrm?.humanoid) {
+    return;
+  }
+
+  if (
+    typeof vrm.humanoid.update ===
+    "function"
+  ) {
+    vrm.humanoid.update();
+  }
+}
+
+// ============================================================
+// WEBSOCKET
+// ============================================================
+
+let socket = null;
+
+let reconnectTimer = null;
+
+function connectReception() {
+  if (
+    socket &&
+    (
+      socket.readyState ===
+      WebSocket.OPEN ||
+      socket.readyState ===
+      WebSocket.CONNECTING
+    )
+  ) {
+    return;
+  }
+
+  console.log(
+    `[WEBSOCKET] Connecting to ${WS_URL}`
+  );
+
+  try {
+    socket = new WebSocket(
+      WS_URL
+    );
+  } catch (error) {
+    console.error(
+      "WebSocket creation failed:",
+      error
+    );
+
+    scheduleReconnect();
+
+    return;
+  }
+
+  socket.onopen = () => {
+    console.log(
+      "[WEBSOCKET] Connected"
+    );
+  };
+
+  socket.onmessage = (event) => {
+    try {
+      const data =
+        JSON.parse(event.data);
+
+      console.log(
+        "[WEBSOCKET] Message:",
+        data
+      );
+
+      if (
+        data.type ===
+        "avatar_state"
+      ) {
+        setAvatarState(
+          data.state
+        );
+      }
+    } catch (error) {
+      console.error(
+        "Invalid WebSocket data:",
+        error
+      );
+    }
+  };
+
+  socket.onerror = () => {
+    console.warn(
+      "[WEBSOCKET] Connection error"
+    );
+  };
+
+  socket.onclose = () => {
+    console.log(
+      "[WEBSOCKET] Disconnected"
+    );
+
+    scheduleReconnect();
+  };
+}
+
+function scheduleReconnect() {
+  clearTimeout(
+    reconnectTimer
+  );
+
+  reconnectTimer =
+    setTimeout(() => {
+      connectReception();
+    }, 2000);
+}
+
+connectReception();
 
 // ============================================================
 // AUTOMATIC DEMO
 // ============================================================
+//
+// This allows you to verify every animation without
+// Python physical_reception.py.
+//
+// Sequence:
+//
+// IDLE
+// ↓
+// VISITOR DETECTED
+// ↓
+// NAMASKAR
+// ↓
+// LISTENING
+// ↓
+// THINKING
+// ↓
+// SPEAKING
+// ↓
+// VISITOR LEFT
+// ↓
+// IDLE
+//
+// ============================================================
 
-function stopAutomaticDemo() {
+const DEMO_SEQUENCE = [
+  {
+    state: STATES.IDLE,
+    duration: 4000,
+  },
 
-  demoRunning = false;
+  {
+    state: STATES.VISITOR_DETECTED,
+    duration: 2500,
+  },
 
-  if (demoTimer) {
+  {
+    state: STATES.GREETING,
+    duration: 4200,
+  },
 
-    clearTimeout(demoTimer);
+  {
+    state: STATES.LISTENING,
+    duration: 4000,
+  },
 
-    demoTimer = null;
+  {
+    state: STATES.THINKING,
+    duration: 3500,
+  },
+
+  {
+    state: STATES.SPEAKING,
+    duration: 7000,
+  },
+
+  {
+    state: STATES.LISTENING,
+    duration: 3500,
+  },
+
+  {
+    state: STATES.VISITOR_LEFT,
+    duration: 3000,
+  },
+];
+
+let demoIndex = 0;
+
+let demoTimer = null;
+
+function startDemo() {
+  if (!AUTO_DEMO) {
+    return;
   }
+
+  clearTimeout(demoTimer);
+
+  const item =
+    DEMO_SEQUENCE[demoIndex];
+
+  setAvatarState(
+    item.state
+  );
+
+  demoTimer =
+    setTimeout(() => {
+      demoIndex =
+        (demoIndex + 1) %
+        DEMO_SEQUENCE.length;
+
+      startDemo();
+    }, item.duration);
 }
 
+// Only run automatic demo if
+// Python has not yet taken control.
 
-function scheduleDemoStep(delay, state, nextStep) {
-
-  demoTimer = setTimeout(() => {
-
-    if (!demoRunning) {
-      return;
-    }
-
-    setState(state);
-
-    if (nextStep) {
-      nextStep();
-    }
-
-  }, delay);
+if (AUTO_DEMO) {
+  setTimeout(() => {
+    startDemo();
+  }, 1500);
 }
 
-
-function startAutomaticDemo() {
-
-  stopAutomaticDemo();
-
-  demoRunning = true;
-
-
-  console.log("");
-  console.log("==========================================");
-  console.log("AUTOMATIC RECEPTIONIST DEMO STARTED");
-  console.log("==========================================");
-
-
-  // 1. IDLE
-  setState("idle");
-
-
-  // 2. Visitor arrives
-  scheduleDemoStep(
-    2500,
-    "visitor_detected"
-  );
-
-
-  // 3. Namaste
-  scheduleDemoStep(
-    5000,
-    "greeting"
-  );
-
-
-  // 4. Listening
-  scheduleDemoStep(
-    8500,
-    "listening"
-  );
-
-
-  // 5. Thinking
-  scheduleDemoStep(
-    12500,
-    "thinking"
-  );
-
-
-  // 6. Speaking
-  scheduleDemoStep(
-    16000,
-    "speaking"
-  );
-
-
-  // 7. Listening again
-  scheduleDemoStep(
-    22000,
-    "listening"
-  );
-
-
-  // 8. Visitor leaves
-  scheduleDemoStep(
-    26000,
-    "visitor_left"
-  );
-
-
-  // 9. Back to idle
-  scheduleDemoStep(
-    30000,
-    "idle",
-    () => {
-
-      if (demoRunning) {
-
-        demoTimer = setTimeout(
-          startAutomaticDemo,
-          3000
-        );
-      }
-    }
-  );
-}
-
-
 // ============================================================
-// DEBUG CONTROLS
+// ANIMATION LOOP
 // ============================================================
 
-window.setAvatarState = function (state) {
+const clock = new THREE.Clock();
 
-  stopAutomaticDemo();
-
-  setState(state);
-};
-
-
-window.playNamaste = function () {
-
-  stopAutomaticDemo();
-
-  setState("greeting");
-};
-
-
-window.startSpeaking = function () {
-
-  stopAutomaticDemo();
-
-  setState("speaking");
-};
-
-
-window.stopSpeaking = function () {
-
-  setExpression("aa", 0);
-  setExpression("ih", 0);
-  setExpression("ou", 0);
-  setExpression("ee", 0);
-  setExpression("oh", 0);
-
-  setState("listening");
-};
-
-
-window.attendVisitor = function () {
-
-  stopAutomaticDemo();
-
-  attentionTarget = {
-    x: 0.35,
-    y: 1.5,
-    z: 2.5,
-  };
-
-  setState("visitor_detected");
-};
-
-
-window.setFormalPose = function () {
-
-  stopAutomaticDemo();
-
-  setState("idle");
-};
-
-
-window.startReceptionDemo = function () {
-
-  startAutomaticDemo();
-};
-
-
-window.stopReceptionDemo = function () {
-
-  stopAutomaticDemo();
-
-  setState("idle");
-};
-
-
-// ============================================================
-// VRM LOADING
-// ============================================================
-
-async function loadVRM() {
-
-  statusElement.textContent =
-    "Loading receptionist avatar...";
-
-  statusElement.dataset.type = "loading";
-
-
-  const loader = new GLTFLoader();
-
-  loader.register(
-    (parser) => new VRMLoaderPlugin(parser)
+function animate() {
+  requestAnimationFrame(
+    animate
   );
 
+  const delta = Math.min(
+    clock.getDelta(),
+    0.05
+  );
 
-  try {
+  const time =
+    clock.elapsedTime;
 
-    const gltf = await loader.loadAsync(
-      "/models/receptionist.vrm"
+  if (vrm) {
+    updateBody(
+      time,
+      delta
     );
 
-
-    vrm = gltf.userData.vrm;
-
-
-    if (!vrm) {
-
-      throw new Error(
-        "VRM model was loaded but VRM data was not found."
-      );
-    }
-
-
-    console.log(
-      "VRM avatar loaded successfully."
+    updateFace(
+      time
     );
 
-
-    // ----------------------------------------------------
-    // MODEL ORIENTATION
-    // ----------------------------------------------------
-
-    vrm.scene.rotation.y = 0;
-
-
-    // ----------------------------------------------------
-    // CENTER MODEL
-    // ----------------------------------------------------
-
-    const box =
-      new THREE.Box3().setFromObject(
-        vrm.scene
-      );
-
-
-    const center =
-      box.getCenter(
-        new THREE.Vector3()
-      );
-
-
-    const size =
-      box.getSize(
-        new THREE.Vector3()
-      );
-
-
-    vrm.scene.position.x =
-      -center.x;
-
-
-    vrm.scene.position.y =
-      -box.min.y;
-
-
-    vrm.scene.position.z =
-      -center.z;
-
-
-    scene.add(vrm.scene);
-
-
-    // ----------------------------------------------------
-    // HUMANOID
-    // ----------------------------------------------------
-
-    if (vrm.humanoid) {
-
-      /*
-          We control normalized bones ourselves.
-
-          The humanoid synchronizes those normalized
-          bones to the actual VRM model.
-      */
-
-      vrm.humanoid.autoUpdateHumanBones = true;
-    }
-
-
-    // ----------------------------------------------------
-    // LOOK AT
-    // ----------------------------------------------------
-
-    if (vrm.lookAt) {
-
-      vrm.lookAt.target =
-        visitorTarget;
-
-      vrm.lookAt.autoUpdate = true;
-
-      console.log(
-        "VRM LookAt system available."
-      );
-
-    } else {
-
-      console.warn(
-        "VRM LookAt system is not available."
-      );
-    }
-
-
-    // ----------------------------------------------------
-    // DIAGNOSTICS
-    // ----------------------------------------------------
-
-    initializeBones();
-
-    inspectExpressions();
-
-
-    // ----------------------------------------------------
-    // INITIAL STATE
-    // ----------------------------------------------------
-
-    setState("idle");
-
-
-    statusElement.textContent =
-      "Receptionist ready.";
-
-    statusElement.dataset.type = "ready";
-
-
-    console.log("");
-    console.log(
-      "=========================================="
-    );
-    console.log(
-      "AVATAR SYSTEM READY"
-    );
-    console.log(
-      "=========================================="
+    updateLookAt(
+      time,
+      delta
     );
 
-
-  } catch (error) {
-
-    console.error(
-      "Failed to load VRM:",
-      error
-    );
-
-
-    statusElement.textContent =
-      "Failed to load receptionist avatar.";
-
-    statusElement.dataset.type = "error";
+    updateHumanoid();
   }
+
+  renderer.render(
+    scene,
+    camera
+  );
 }
 
+animate();
 
 // ============================================================
 // RESIZE
@@ -1407,13 +1526,11 @@ async function loadVRM() {
 window.addEventListener(
   "resize",
   () => {
-
     camera.aspect =
       window.innerWidth /
       window.innerHeight;
 
     camera.updateProjectionMatrix();
-
 
     renderer.setSize(
       window.innerWidth,
@@ -1421,135 +1538,3 @@ window.addEventListener(
     );
   }
 );
-
-
-// ============================================================
-// MAIN ANIMATION LOOP
-// ============================================================
-
-function animate() {
-
-  requestAnimationFrame(animate);
-
-
-  const delta =
-    Math.min(
-      clock.getDelta(),
-      0.05
-    );
-
-
-  const elapsed =
-    clock.elapsedTime;
-
-
-  if (!vrm) {
-
-    renderer.render(
-      scene,
-      camera
-    );
-
-    return;
-  }
-
-
-  // --------------------------------------------------------
-  // NAMASTE
-  // --------------------------------------------------------
-
-  updateNamaste(
-    elapsed,
-    delta
-  );
-
-
-  // --------------------------------------------------------
-  // SMOOTH BODY POSE
-  // --------------------------------------------------------
-
-  updatePose(delta);
-
-
-  // --------------------------------------------------------
-  // NATURAL HEAD
-  // --------------------------------------------------------
-
-  updateNaturalHeadMovement(
-    elapsed
-  );
-
-
-  // --------------------------------------------------------
-  // THINKING
-  // --------------------------------------------------------
-
-  updateThinkingMovement(
-    elapsed
-  );
-
-
-  // --------------------------------------------------------
-  // SPEAKING
-  // --------------------------------------------------------
-
-  updateSpeakingMovement(
-    elapsed
-  );
-
-
-  // --------------------------------------------------------
-  // VISITOR ATTENTION / EYES
-  // --------------------------------------------------------
-
-  updateVisitorAttention(
-    delta
-  );
-
-
-  // --------------------------------------------------------
-  // MOUTH
-  // --------------------------------------------------------
-
-  updateMouth(
-    elapsed
-  );
-
-
-  // --------------------------------------------------------
-  // BLINK
-  // --------------------------------------------------------
-
-  updateBlink(
-    elapsed
-  );
-
-
-  // --------------------------------------------------------
-  // EXPRESSIONS
-  // --------------------------------------------------------
-
-  if (vrm.expressionManager) {
-
-    vrm.expressionManager.update();
-  }
-
-
-  // --------------------------------------------------------
-  // RENDER
-  // --------------------------------------------------------
-
-  renderer.render(
-    scene,
-    camera
-  );
-}
-
-
-// ============================================================
-// START
-// ============================================================
-
-loadVRM();
-
-animate();

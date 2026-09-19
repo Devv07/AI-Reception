@@ -1,13 +1,13 @@
+from __future__ import annotations
+
+import time
 from enum import Enum
 from typing import Dict, List, Optional
-import time
+
+from vision.reception.event_bridge import VisionEventBridge
 
 
-class ReceptionState(Enum):
-    """
-    Main state of the physical AI receptionist.
-    """
-
+class ReceptionState(str, Enum):
     IDLE = "idle"
     VISITOR_DETECTED = "visitor_detected"
     GREETING = "greeting"
@@ -19,398 +19,465 @@ class ReceptionState(Enum):
 
 class ReceptionController:
     """
-    Controls the reception state based on visitor tracking events.
+    Physical receptionist state controller.
 
-    This class does NOT handle:
-        - Speech recognition
-        - LLM/AI reasoning
-        - Text-to-speech
-        - Avatar rendering
+    IMPORTANT:
+    ByteTrack IDs are NOT used to determine whether the
+    physical visitor is present.
 
-    It only manages the receptionist's state and visitor events.
+    A person being detected by YOLO is enough to consider
+    the visitor present.
+
+    This prevents ByteTrack ID changes such as:
+
+        #1 -> #2 -> #5 -> #8
+
+    from being interpreted as different visitors.
+
+    Phase 12.5:
+    Real reception lifecycle events are forwarded to the
+    shared backend integration layer through VisionEventBridge.
     """
+
+    LOGICAL_VISITOR_ID = 1
 
     def __init__(
         self,
         greeting_delay: float = 1.0,
-        visitor_timeout: float = 2.0,
+        visitor_timeout: float = 5.0,
     ):
+        self.state = ReceptionState.IDLE
+
         self.greeting_delay = greeting_delay
         self.visitor_timeout = visitor_timeout
 
-        self.state = ReceptionState.IDLE
-
-        self.active_visitors: Dict[int, Dict] = {}
-
+        # Logical visitor only.
+        # We deliberately do NOT store ByteTrack IDs here.
         self.primary_visitor_id: Optional[int] = None
 
-        self.state_changed_at = time.time()
+        # These are only informational.
+        self.active_visitors: Dict[int, Dict[str, float]] = {}
 
-        self.last_event = None
+        self.last_event: Optional[str] = None
 
-    # ---------------------------------------------------------
-    # State management
-    # ---------------------------------------------------------
+        self._greeting_started_at: Optional[float] = None
 
-    def set_state(self, new_state: ReceptionState) -> None:
-        """
-        Change the receptionist state.
-        """
+        # Last time YOLO detected at least one person.
+        self._last_person_seen_at: Optional[float] = None
 
-        if self.state == new_state:
-            return
+        # Whether a person was detected in the previous update.
+        self._person_was_present = False
 
-        previous_state = self.state
+    # =========================================================
+    # EVENT INTEGRATION
+    # =========================================================
 
-        self.state = new_state
-        self.state_changed_at = time.time()
-
-        print(
-            f"[RECEPTION] "
-            f"{previous_state.value.upper()} "
-            f"-> "
-            f"{new_state.value.upper()}"
-        )
-
-    def get_state(self) -> ReceptionState:
-        """
-        Return the current reception state.
-        """
-
-        return self.state
-
-    def get_state_name(self) -> str:
-        """
-        Return the current state as a string.
-        """
-
-        return self.state.value
-
-    def get_state_duration(self) -> float:
-        """
-        Return how long the current state has been active.
-        """
-
-        return time.time() - self.state_changed_at
-
-    # ---------------------------------------------------------
-    # Visitor handling
-    # ---------------------------------------------------------
-
-    def update_visitors(
+    def _publish_event(
         self,
-        visitor_ids: List[int],
+        event_type: str,
+        data: Optional[dict] = None,
     ) -> None:
         """
-        Update the controller with currently visible visitor IDs.
+        Publish a reception event through VisionEventBridge.
 
-        Example:
-
-            [1]
-            [1, 2]
-            []
+        Integration failures are isolated by the bridge and must
+        never stop the physical reception controller.
         """
 
-        current_time = time.time()
+        visitor_id = str(
+            self.primary_visitor_id
+            or self.LOGICAL_VISITOR_ID
+        )
 
-        current_ids = set(visitor_ids)
-        previous_ids = set(self.active_visitors.keys())
+        VisionEventBridge.publish(
+            event_type=event_type,
+            visitor_id=visitor_id,
+            data={
+                "state": self.state.value,
+                "last_event": self.last_event,
+                **(data or {}),
+            },
+        )
+
+    # =========================================================
+    # UPDATE PERSON PRESENCE
+    # =========================================================
+
+    def update_visitors(self, visitor_ids: List[int]) -> None:
+        """
+        Update physical visitor presence.
+
+        visitor_ids comes from ByteTrack, but the actual numeric
+        IDs are NOT used to determine visitor identity.
+
+        Any non-empty list means:
+
+            A person is present.
+
+        Empty list means:
+
+            No person detected in this frame.
+        """
+
+        now = time.time()
 
         # -----------------------------------------------------
-        # Detect new visitors
+        # PERSON PRESENT
         # -----------------------------------------------------
 
-        new_visitors = current_ids - previous_ids
+        if visitor_ids:
 
-        for visitor_id in new_visitors:
-
-            self.active_visitors[visitor_id] = {
-                "visitor_id": visitor_id,
-                "first_seen": current_time,
-                "last_seen": current_time,
-            }
-
-            print(
-                f"[RECEPTION] "
-                f"New visitor detected: #{visitor_id}"
-            )
-
-        # -----------------------------------------------------
-        # Update existing visitors
-        # -----------------------------------------------------
-
-        for visitor_id in current_ids:
-
-            if visitor_id in self.active_visitors:
-
-                self.active_visitors[visitor_id][
-                    "last_seen"
-                ] = current_time
-
-        # -----------------------------------------------------
-        # Detect visitors that disappeared
-        # -----------------------------------------------------
-
-        missing_visitors = previous_ids - current_ids
-
-        for visitor_id in missing_visitors:
+            # At least one person is visible.
+            self._last_person_seen_at = now
 
             visitor = self.active_visitors.get(
-                visitor_id
+                self.LOGICAL_VISITOR_ID,
             )
 
-            if visitor is None:
-                continue
+            self.active_visitors = {
+                self.LOGICAL_VISITOR_ID: {
+                    "first_seen": (
+                        visitor["first_seen"]
+                        if visitor is not None
+                        else now
+                    ),
+                    "last_seen": now,
+                }
+            }
 
-            time_since_seen = (
-                current_time
-                - visitor["last_seen"]
-            )
+            # -------------------------------------------------
+            # NEW PHYSICAL VISITOR
+            # -------------------------------------------------
 
-            if time_since_seen >= self.visitor_timeout:
+            if not self._person_was_present:
 
-                duration = (
-                    visitor["last_seen"]
-                    - visitor["first_seen"]
+                self.primary_visitor_id = self.LOGICAL_VISITOR_ID
+
+                self.state = ReceptionState.VISITOR_DETECTED
+
+                self._greeting_started_at = now
+
+                self.last_event = "visitor_detected"
+
+                print(
+                    "[RECEPTION] Visitor presence detected."
                 )
 
                 print(
-                    f"[RECEPTION] "
-                    f"Visitor #{visitor_id} left. "
-                    f"Duration: {duration:.1f}s"
+                    "[RECEPTION] Logical visitor ID: #1"
                 )
 
-                del self.active_visitors[
-                    visitor_id
-                ]
+                # Notify shared backend.
+                self._publish_event(
+                    "visitor_detected",
+                    {
+                        "detected_tracker_ids": list(
+                            visitor_ids
+                        ),
+                        "visitor_count": len(
+                            visitor_ids
+                        ),
+                    },
+                )
 
-                self.last_event = {
-                    "type": "visitor_left",
-                    "visitor_id": visitor_id,
-                    "duration": duration,
-                    "timestamp": current_time,
-                }
+                # A physical visitor has actually arrived.
+                self._publish_event(
+                    "visitor_arrived",
+                    {
+                        "detected_tracker_ids": list(
+                            visitor_ids
+                        ),
+                        "visitor_count": len(
+                            visitor_ids
+                        ),
+                    },
+                )
 
-        # -----------------------------------------------------
-        # Determine primary visitor
-        # -----------------------------------------------------
+            # -------------------------------------------------
+            # EXISTING PHYSICAL VISITOR
+            # -------------------------------------------------
 
-        self._update_primary_visitor()
+            else:
 
-        # -----------------------------------------------------
-        # Update reception state
-        # -----------------------------------------------------
+                # Keep the logical visitor alive.
+                if self.primary_visitor_id is None:
 
-        self._update_state()
+                    self.primary_visitor_id = (
+                        self.LOGICAL_VISITOR_ID
+                    )
 
-    # ---------------------------------------------------------
-    # Primary visitor
-    # ---------------------------------------------------------
+                # If state was VISITOR_LEFT, a person has
+                # returned and should start a new greeting.
+                if self.state == ReceptionState.VISITOR_LEFT:
 
-    def _update_primary_visitor(self) -> None:
-        """
-        Select the primary visitor.
+                    self.state = ReceptionState.VISITOR_DETECTED
 
-        Currently the first detected visitor is treated
-        as the primary visitor.
-        """
+                    self._greeting_started_at = now
 
-        if not self.active_visitors:
+                    self.last_event = "visitor_detected"
 
-            self.primary_visitor_id = None
+                    print(
+                        "[RECEPTION] Visitor returned."
+                    )
+
+                    self._publish_event(
+                        "visitor_detected",
+                        {
+                            "detected_tracker_ids": list(
+                                visitor_ids
+                            ),
+                            "visitor_count": len(
+                                visitor_ids
+                            ),
+                            "returned": True,
+                        },
+                    )
+
+                    self._publish_event(
+                        "visitor_arrived",
+                        {
+                            "detected_tracker_ids": list(
+                                visitor_ids
+                            ),
+                            "visitor_count": len(
+                                visitor_ids
+                            ),
+                            "returned": True,
+                        },
+                    )
+
+            # -------------------------------------------------
+            # START GREETING
+            # -------------------------------------------------
+
+            if self.should_greet():
+
+                self.state = ReceptionState.GREETING
+
+                self.last_event = "greeting"
+
+                self._publish_event(
+                    "reception_started",
+                    {
+                        "reason": "visitor_present",
+                    },
+                )
+
+            self._person_was_present = True
 
             return
 
-        visitors = sorted(
-            self.active_visitors.values(),
-            key=lambda visitor: visitor["first_seen"],
+        # -----------------------------------------------------
+        # NO PERSON IN CURRENT FRAME
+        # -----------------------------------------------------
+
+        if self._last_person_seen_at is None:
+
+            self._person_was_present = False
+
+            return
+
+        time_since_seen = (
+            now - self._last_person_seen_at
         )
 
-        self.primary_visitor_id = visitors[0][
-            "visitor_id"
-        ]
+        # -----------------------------------------------------
+        # TEMPORARY DETECTION LOSS
+        # -----------------------------------------------------
 
-    def get_primary_visitor_id(
-        self,
-    ) -> Optional[int]:
-        """
-        Return the current primary visitor ID.
-        """
+        if time_since_seen < self.visitor_timeout:
+
+            # Do NOTHING.
+
+            # YOLO/ByteTrack can temporarily lose a person.
+            # We do not end the interaction immediately.
+
+            return
+
+        # -----------------------------------------------------
+        # REAL VISITOR LEFT
+        # -----------------------------------------------------
+
+        visitor_was_present = self._person_was_present
+
+        if visitor_was_present:
+
+            print(
+                "[RECEPTION] No person detected for "
+                f"{self.visitor_timeout:.1f}s."
+            )
+
+            print(
+                "[RECEPTION] Visitor actually left."
+            )
+
+        # Keep the visitor ID available while publishing the
+        # visitor_left event.
+        visitor_id = (
+            self.primary_visitor_id
+            or self.LOGICAL_VISITOR_ID
+        )
+
+        self.active_visitors.clear()
+
+        self.primary_visitor_id = None
+
+        self._greeting_started_at = None
+
+        self._last_person_seen_at = None
+
+        self._person_was_present = False
+
+        self.state = ReceptionState.VISITOR_LEFT
+
+        self.last_event = "visitor_left"
+
+        if visitor_was_present:
+
+            VisionEventBridge.publish(
+                event_type="visitor_left",
+                visitor_id=str(visitor_id),
+                data={
+                    "reason": "visitor_timeout",
+                    "timeout_seconds": (
+                        self.visitor_timeout
+                    ),
+                },
+            )
+
+    # =========================================================
+    # GREETING
+    # =========================================================
+
+    def should_greet(self) -> bool:
+
+        if self.primary_visitor_id is None:
+            return False
+
+        if self.state != ReceptionState.VISITOR_DETECTED:
+            return False
+
+        if self._greeting_started_at is None:
+            return False
+
+        elapsed = (
+            time.time()
+            - self._greeting_started_at
+        )
+
+        return elapsed >= self.greeting_delay
+
+    # =========================================================
+    # RECEPTION STATES
+    # =========================================================
+
+    def start_listening(self) -> None:
+
+        if self.primary_visitor_id is None:
+            return
+
+        self.state = ReceptionState.LISTENING
+
+        self.last_event = "listening"
+
+    def start_thinking(self) -> None:
+
+        if self.primary_visitor_id is None:
+            return
+
+        self.state = ReceptionState.THINKING
+
+        self.last_event = "thinking"
+
+    def start_speaking(self) -> None:
+
+        if self.primary_visitor_id is None:
+            return
+
+        self.state = ReceptionState.SPEAKING
+
+        self.last_event = "speaking"
+
+    def return_to_listening(self) -> None:
+
+        if self.primary_visitor_id is not None:
+
+            self.state = ReceptionState.LISTENING
+
+            self.last_event = "listening"
+
+        else:
+
+            self.state = ReceptionState.IDLE
+
+    # =========================================================
+    # FINISH INTERACTION
+    # =========================================================
+
+    def finish_interaction(self) -> None:
+
+        visitor_id = (
+            self.primary_visitor_id
+            or self.LOGICAL_VISITOR_ID
+        )
+
+        previous_state = self.state.value
+
+        self.state = ReceptionState.IDLE
+
+        self.primary_visitor_id = None
+
+        self.active_visitors.clear()
+
+        self._greeting_started_at = None
+
+        self._last_person_seen_at = None
+
+        self._person_was_present = False
+
+        self.last_event = "interaction_finished"
+
+        VisionEventBridge.publish(
+            event_type="reception_ended",
+            visitor_id=str(visitor_id),
+            data={
+                "reason": "interaction_finished",
+                "previous_state": previous_state,
+            },
+        )
+
+    # =========================================================
+    # INFORMATION
+    # =========================================================
+
+    def get_active_visitors(self) -> List[int]:
+
+        if self.primary_visitor_id is None:
+            return []
+
+        return [self.primary_visitor_id]
+
+    def get_active_visitor_count(self) -> int:
+
+        if self.primary_visitor_id is None:
+            return 0
+
+        return 1
+
+    def get_primary_visitor(self) -> Optional[int]:
 
         return self.primary_visitor_id
 
-    # ---------------------------------------------------------
-    # State decision
-    # ---------------------------------------------------------
+    def get_last_event(self) -> Optional[str]:
 
-    def _update_state(self) -> None:
-        """
-        Determine the appropriate reception state.
-        """
+        return self.last_event
 
-        visitor_count = len(
-            self.active_visitors
-        )
-
-        # -----------------------------------------------------
-        # No visitors
-        # -----------------------------------------------------
-
-        if visitor_count == 0:
-
-            if self.state != ReceptionState.IDLE:
-
-                self.set_state(
-                    ReceptionState.IDLE
-                )
-
-            return
-
-        # -----------------------------------------------------
-        # New visitor
-        # -----------------------------------------------------
-
-        if self.state == ReceptionState.IDLE:
-
-            self.set_state(
-                ReceptionState.VISITOR_DETECTED
-            )
-
-            return
-
-        # -----------------------------------------------------
-        # Visitor detected → greeting
-        # -----------------------------------------------------
-
-        if (
-            self.state
-            == ReceptionState.VISITOR_DETECTED
-        ):
-
-            if (
-                self.get_state_duration()
-                >= self.greeting_delay
-            ):
-
-                self.set_state(
-                    ReceptionState.GREETING
-                )
-
-            return
-
-    # ---------------------------------------------------------
-    # External state controls
-    # ---------------------------------------------------------
-
-    def start_listening(self) -> None:
-        """
-        Called when microphone/STT starts listening.
-        """
-
-        self.set_state(
-            ReceptionState.LISTENING
-        )
-
-    def start_thinking(self) -> None:
-        """
-        Called when AI Brain starts processing.
-        """
-
-        self.set_state(
-            ReceptionState.THINKING
-        )
-
-    def start_speaking(self) -> None:
-        """
-        Called when TTS starts speaking.
-        """
-
-        self.set_state(
-            ReceptionState.SPEAKING
-        )
-
-    def return_to_listening(self) -> None:
-        """
-        Return to listening after speaking.
-        """
-
-        if self.primary_visitor_id is not None:
-
-            self.set_state(
-                ReceptionState.LISTENING
-            )
-
-        else:
-
-            self.set_state(
-                ReceptionState.IDLE
-            )
-
-    def finish_interaction(self) -> None:
-        """
-        Finish the current interaction.
-
-        If the visitor is still present, return to listening.
-        Otherwise return to idle.
-        """
-
-        if self.primary_visitor_id is not None:
-
-            self.set_state(
-                ReceptionState.LISTENING
-            )
-
-        else:
-
-            self.set_state(
-                ReceptionState.IDLE
-            )
-
-    # ---------------------------------------------------------
-    # Information
-    # ---------------------------------------------------------
-
-    def get_active_visitors(self) -> List[Dict]:
-        """
-        Return information about active visitors.
-        """
-
-        return list(
-            self.active_visitors.values()
-        )
-
-    def get_active_visitor_count(self) -> int:
-        """
-        Return number of currently active visitors.
-        """
-
-        return len(self.active_visitors)
-
-    def get_last_event(self):
-        """
-        Return the latest reception event.
-        """
-
-        event = self.last_event
-
-        self.last_event = None
-
-        return event
-
-    def get_status(self) -> Dict:
-        """
-        Return the complete reception status.
-        """
+    def get_status(self) -> dict:
 
         return {
             "state": self.state.value,
-            "active_visitors": (
-                self.get_active_visitor_count()
-            ),
-            "primary_visitor_id": (
-                self.primary_visitor_id
-            ),
-            "state_duration": (
-                self.get_state_duration()
-            ),
+            "active_visitors": self.get_active_visitors(),
+            "active_visitor_count": self.get_active_visitor_count(),
+            "primary_visitor": self.primary_visitor_id,
+            "last_event": self.last_event,
         }

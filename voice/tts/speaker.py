@@ -1,205 +1,126 @@
 import pyttsx3
-from typing import Optional
 
 
 class Speaker:
     """
-    Local Text-to-Speech speaker for the AI Reception system.
+    Windows text-to-speech speaker.
 
-    Uses the operating system's installed speech engine.
+    Uses Microsoft Zira as the preferred female voice.
+    The pyttsx3 engine is created and used in the same thread.
     """
 
     def __init__(
         self,
         rate: int = 165,
         volume: float = 1.0,
-        voice: Optional[str] = None,
+        preferred_voice: str = "zira",
     ):
         self.rate = rate
         self.volume = volume
-        self.voice = voice
+        self.preferred_voice = preferred_voice.lower()
+
+        self.voice_id = None
+        self.voice_name = "Unknown"
+
+        # Only discover the voice here.
+        # The actual TTS engine is created inside speak().
+        self._find_preferred_voice()
+
+    def _find_preferred_voice(self) -> None:
+        engine = pyttsx3.init()
 
         try:
-            self.engine = pyttsx3.init()
-        except Exception as error:
-            raise RuntimeError(
-                f"Unable to initialize TTS engine: {error}"
-            ) from error
+            voices = engine.getProperty("voices")
 
-        self._configure()
+            print("[TTS] Available voices:")
 
-    def _configure(self) -> None:
-        """
-        Configure speech rate, volume, and optional voice.
-        """
+            for voice in voices:
+                name = getattr(voice, "name", "")
+                print(f"  - {name}")
 
-        self.engine.setProperty(
-            "rate",
-            self.rate,
-        )
+                if self.preferred_voice in name.lower():
+                    self.voice_id = voice.id
+                    self.voice_name = name
+                    print(f"[TTS] Selected female voice: {name}")
+                    return
 
-        self.engine.setProperty(
-            "volume",
-            self.volume,
-        )
+            # Fallback female voices
+            female_names = [
+                "zira",
+                "hazel",
+                "susan",
+                "samantha",
+                "female",
+            ]
 
-        if self.voice:
-            self.engine.setProperty(
-                "voice",
-                self.voice,
-            )
+            for voice in voices:
+                name = getattr(voice, "name", "").lower()
 
-    def get_voices(self):
-        """
-        Return all voices available on the system.
-        """
+                if any(item in name for item in female_names):
+                    self.voice_id = voice.id
+                    self.voice_name = voice.name
+                    print(
+                        f"[TTS] Selected fallback female voice: "
+                        f"{voice.name}"
+                    )
+                    return
 
-        try:
-            return self.engine.getProperty("voices")
-        except Exception as error:
-            raise RuntimeError(
-                f"Unable to retrieve TTS voices: {error}"
-            ) from error
+            # Last fallback
+            if voices:
+                self.voice_id = voices[0].id
+                self.voice_name = voices[0].name
 
-    def list_voices(self) -> None:
-        """
-        Print all installed system voices.
-        """
+                print(
+                    f"[TTS] Female voice not found. "
+                    f"Using: {voices[0].name}"
+                )
 
-        voices = self.get_voices()
-
-        print()
-        print("=" * 60)
-        print("AVAILABLE TTS VOICES")
-        print("=" * 60)
-
-        if not voices:
-            print("No TTS voices found.")
-            print("=" * 60)
-            return
-
-        for index, voice in enumerate(voices):
-            print(f"[{index}]")
-            print(f"  Name: {voice.name}")
-            print(f"  ID: {voice.id}")
-
-            if hasattr(voice, "languages"):
-                print(f"  Languages: {voice.languages}")
-
-            print()
-
-        print("=" * 60)
-
-    def set_voice(self, voice_id: str) -> None:
-        """
-        Change the active TTS voice.
-        """
-
-        if not voice_id:
-            raise ValueError(
-                "Voice ID cannot be empty."
-            )
-
-        self.voice = voice_id
-
-        self.engine.setProperty(
-            "voice",
-            voice_id,
-        )
-
-    def set_rate(self, rate: int) -> None:
-        """
-        Change speech rate.
-        """
-
-        if rate <= 0:
-            raise ValueError(
-                "Speech rate must be greater than zero."
-            )
-
-        self.rate = rate
-
-        self.engine.setProperty(
-            "rate",
-            rate,
-        )
-
-    def set_volume(self, volume: float) -> None:
-        """
-        Change speech volume.
-
-        Range:
-            0.0 - 1.0
-        """
-
-        if not 0.0 <= volume <= 1.0:
-            raise ValueError(
-                "Volume must be between 0.0 and 1.0."
-            )
-
-        self.volume = volume
-
-        self.engine.setProperty(
-            "volume",
-            volume,
-        )
+        finally:
+            try:
+                engine.stop()
+            except Exception:
+                pass
 
     def speak(self, text: str) -> None:
         """
-        Speak the supplied text through the speaker.
+        Speak text synchronously.
+
+        The engine is created and destroyed inside this same call.
+        This avoids Windows COM/thread issues with pyttsx3.
         """
 
-        if text is None:
-            raise ValueError(
-                "Text cannot be None."
-            )
+        if not text or not text.strip():
+            return
 
-        text = str(text).strip()
+        print(f"Receptionist: {text}")
 
-        if not text:
-            raise ValueError(
-                "Text cannot be empty."
-            )
-
-        print()
-        print("Receptionist:")
-        print(text)
+        engine = pyttsx3.init()
 
         try:
-            self.engine.say(text)
-            self.engine.runAndWait()
-        except Exception as error:
-            raise RuntimeError(
-                f"TTS speech failed: {error}"
-            ) from error
+            engine.setProperty("rate", self.rate)
+            engine.setProperty("volume", self.volume)
+
+            if self.voice_id:
+                engine.setProperty("voice", self.voice_id)
+
+            engine.say(text)
+            engine.runAndWait()
+
+        finally:
+            try:
+                engine.stop()
+            except Exception:
+                pass
 
     def stop(self) -> None:
         """
-        Stop current speech.
+        Compatibility method.
         """
 
-        try:
-            self.engine.stop()
-        except Exception as error:
-            raise RuntimeError(
-                f"Unable to stop TTS engine: {error}"
-            ) from error
+        pass
 
-    def test_speech(self) -> bool:
-        """
-        Test the speaker with a reception greeting.
-        """
+    def get_voice(self) -> str:
+        return self.voice_id or ""
 
-        test_text = (
-            "Hello. Welcome to our reception. "
-            "How can I help you today?"
-        )
-
-        try:
-            self.speak(test_text)
-            return True
-        except Exception as error:
-            print()
-            print("TTS test failed.")
-            print(error)
-            return False
+    def get_voice_name(self) -> str:
+        return self.voice_name

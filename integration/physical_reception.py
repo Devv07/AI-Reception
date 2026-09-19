@@ -1,23 +1,27 @@
+import asyncio
+import json
 import sys
 import time
-import threading
+import wave
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import cv2
+import websockets
+
 
 # ============================================================
 # PROJECT ROOT
 # ============================================================
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
 # ============================================================
-# EXISTING PROJECT MODULES
+# PROJECT IMPORTS
 # ============================================================
 
 from vision.camera.camera import Camera
@@ -36,116 +40,41 @@ from avatar.controller.avatar_controller import (
     AvatarState,
 )
 
+from services.ai.pipeline import chat
+
 
 # ============================================================
-# AI BRAIN ADAPTER
+# CONFIGURATION
 # ============================================================
 
-class AIBrainAdapter:
-    """
-    Adapter for the shared AI Brain.
+ORG_ID = "texas-college"
+ORG_NAME = "Texas College of Management and IT"
+CHANNEL = "physical"
 
-    The exact implementation of app/ai/brain.py may evolve
-    as Member 1 develops the shared AI system.
+CAMERA_INDEX = 0
+CAMERA_WIDTH = 1280
+CAMERA_HEIGHT = 720
 
-    This adapter keeps Phase 9 independent from the internal
-    implementation of the AI Brain.
+RECORDING_SECONDS = 8
 
-    Supported methods:
-        process()
-        respond()
-        generate_response()
-        chat()
+RECORDINGS_DIR = PROJECT_ROOT / "voice" / "recordings"
 
-    The first available method is used.
-    """
+GREETING_TEXT = (
+    "Namaste. Welcome to our reception. "
+    "How can I help you today?"
+)
 
-    def __init__(self):
-        try:
-            from app.ai.brain import AIBrain
+GOODBYE_TEXT = (
+    "Thank you for visiting. "
+    "Have a wonderful day."
+)
 
-            self.brain = AIBrain()
+WEBSOCKET_HOST = "127.0.0.1"
+WEBSOCKET_PORT = 8765
 
-        except ImportError:
+MINIMUM_TRANSCRIPT_LENGTH = 2
 
-            try:
-                from app.ai.brain import AIBrainService
-
-                self.brain = AIBrainService()
-
-            except ImportError as error:
-
-                raise RuntimeError(
-                    "Unable to import the shared AI Brain.\n"
-                    "Expected AIBrain or AIBrainService in:\n"
-                    "app/ai/brain.py"
-                ) from error
-
-        print("AI Brain initialized.")
-
-    def process(self, user_text: str) -> str:
-
-        if not user_text.strip():
-            return (
-                "I am sorry, I did not hear your request."
-            )
-
-        methods = [
-            "process",
-            "respond",
-            "generate_response",
-            "chat",
-        ]
-
-        for method_name in methods:
-
-            method = getattr(
-                self.brain,
-                method_name,
-                None,
-            )
-
-            if not callable(method):
-                continue
-
-            try:
-
-                result = method(user_text)
-
-                if result is None:
-                    continue
-
-                if isinstance(result, str):
-                    return result.strip()
-
-                if isinstance(result, dict):
-
-                    for key in [
-                        "response",
-                        "answer",
-                        "message",
-                        "text",
-                    ]:
-
-                        value = result.get(key)
-
-                        if value:
-                            return str(value).strip()
-
-                return str(result).strip()
-
-            except TypeError:
-                continue
-
-        raise RuntimeError(
-            "The shared AI Brain does not expose a supported "
-            "text-processing method.\n"
-            "Expected one of:\n"
-            "process()\n"
-            "respond()\n"
-            "generate_response()\n"
-            "chat()"
-        )
+VISITOR_LEFT_GOODBYE_DELAY = 0.5
 
 
 # ============================================================
@@ -154,149 +83,200 @@ class AIBrainAdapter:
 
 class PhysicalReceptionist:
 
-    """
-    Complete Phase 9 physical receptionist.
-
-    Pipeline:
-
-        Camera
-            ↓
-        YOLO + ByteTrack
-            ↓
-        ReceptionController
-            ↓
-        Microphone
-            ↓
-        Whisper STT
-            ↓
-        Shared AI Brain
-            ↓
-        TTS Speaker
-
-    Avatar state is synchronized with the same reception state.
-    """
-
-    GREETING_TEXT = (
-        "Namaste. Welcome to our reception. "
-        "How can I help you today?"
-    )
-
-    NO_INPUT_TEXT = (
-        "I am sorry, I could not hear you clearly. "
-        "Could you please repeat that?"
-    )
-
-    GOODBYE_TEXT = (
-        "Thank you. Have a wonderful day."
-    )
-
-    def __init__(
-        self,
-        camera_index: int = 0,
-        microphone_duration: float = 5.0,
-    ):
-
-        self.camera_index = camera_index
-
-        self.microphone_duration = (
-            microphone_duration
-        )
-
-        self.running = False
-
-        self.interaction_active = False
-
-        self.last_visitor_ids = set()
-
-        # ----------------------------------------------------
-        # CORE COMPONENTS
-        # ----------------------------------------------------
+    def __init__(self):
 
         print()
-        print("=" * 70)
+        print("=" * 60)
         print("INITIALIZING AI RECEPTIONIST")
-        print("=" * 70)
+        print("=" * 60)
 
-        print("\n[1/7] Initializing camera...")
+        # ----------------------------------------------------
+        # Camera
+        # ----------------------------------------------------
 
         self.camera = Camera(
-            camera_index=camera_index
+            camera_index=CAMERA_INDEX,
+            width=CAMERA_WIDTH,
+            height=CAMERA_HEIGHT,
         )
 
-        print("Camera initialized.")
+        # ----------------------------------------------------
+        # Vision
+        # ----------------------------------------------------
 
-        print("\n[2/7] Initializing visitor tracker...")
+        self.tracker = VisitorTracker(
+            model_path="yolo11n.pt",
+            confidence=0.50,
+            tracker="bytetrack.yaml",
+        )
 
-        self.tracker = VisitorTracker()
-
-        print("Visitor tracker initialized.")
-
-        print("\n[3/7] Initializing reception controller...")
+        # ----------------------------------------------------
+        # Reception controller
+        # ----------------------------------------------------
 
         self.reception = ReceptionController()
 
-        print("Reception controller initialized.")
-
-        print("\n[4/7] Initializing microphone...")
+        # ----------------------------------------------------
+        # Voice
+        # ----------------------------------------------------
 
         self.microphone = Microphone(
             sample_rate=16000,
             channels=1,
-            dtype="int16",
         )
-
-        print("Microphone initialized.")
-
-        print("\n[5/7] Initializing Whisper STT...")
 
         self.stt = WhisperSTT()
 
-        print("Whisper STT initialized.")
-
-        print("\n[6/7] Initializing speaker...")
-
+        # Speaker uses Microsoft Zira by default.
         self.speaker = Speaker(
             rate=165,
             volume=1.0,
+            preferred_voice="zira",
         )
 
-        print("Speaker initialized.")
-
-        print("\n[7/7] Initializing avatar controller...")
+        # ----------------------------------------------------
+        # Avatar
+        # ----------------------------------------------------
 
         self.avatar = AvatarController()
 
-        print("Avatar controller initialized.")
-
         # ----------------------------------------------------
-        # AI BRAIN
+        # WebSocket
         # ----------------------------------------------------
 
-        print("\nInitializing shared AI Brain...")
+        self.avatar_clients = set()
+        self.websocket_server = None
 
-        self.ai_brain = AIBrainAdapter()
+        # ----------------------------------------------------
+        # Conversation
+        # ----------------------------------------------------
 
-        print("Shared AI Brain ready.")
+        self.conversation_id: Optional[str] = None
+        self.current_visitor_id: Optional[int] = None
 
+        self.visitor_session_active = False
+
+        # Prevent processing multiple conversation turns
+        # simultaneously.
+        self.processing_turn = False
+
+        # ----------------------------------------------------
+        # Runtime
+        # ----------------------------------------------------
+
+        self.running = True
+
+        # ----------------------------------------------------
+        # Recordings
+        # ----------------------------------------------------
+
+        RECORDINGS_DIR.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        print("AI Reception components initialized.")
         print()
-        print("=" * 70)
-        print("AI RECEPTIONIST INITIALIZATION COMPLETE")
-        print("=" * 70)
-        print()
+
+
+    # ========================================================
+    # WEBSOCKET SERVER
+    # ========================================================
+
+    async def start_websocket_server(self):
+
+        self.websocket_server = await websockets.serve(
+            self.avatar_websocket_handler,
+            WEBSOCKET_HOST,
+            WEBSOCKET_PORT,
+        )
+
+        print(
+            f"Avatar WebSocket server started: "
+            f"ws://{WEBSOCKET_HOST}:{WEBSOCKET_PORT}"
+        )
+
+
+    async def avatar_websocket_handler(self, websocket):
+
+        self.avatar_clients.add(websocket)
+
+        print(
+            f"[WEBSOCKET] Avatar connected "
+            f"({len(self.avatar_clients)} client(s))"
+        )
+
+        try:
+
+            await websocket.send(
+                json.dumps(
+                    {
+                        "type": "avatar_state",
+                        **self.avatar.get_status(),
+                    }
+                )
+            )
+
+            await websocket.wait_closed()
+
+        except websockets.exceptions.ConnectionClosed:
+            pass
+
+        except Exception as error:
+
+            print(
+                f"[WEBSOCKET] Client error: {error}"
+            )
+
+        finally:
+
+            self.avatar_clients.discard(websocket)
+
+            print(
+                f"[WEBSOCKET] Avatar disconnected "
+                f"({len(self.avatar_clients)} client(s))"
+            )
+
+
+    async def broadcast_avatar_state(self):
+
+        if not self.avatar_clients:
+            return
+
+        message = json.dumps(
+            {
+                "type": "avatar_state",
+                **self.avatar.get_status(),
+            }
+        )
+
+        disconnected = set()
+
+        for websocket in list(self.avatar_clients):
+
+            try:
+
+                await websocket.send(message)
+
+            except Exception:
+
+                disconnected.add(websocket)
+
+        for websocket in disconnected:
+
+            self.avatar_clients.discard(websocket)
 
 
     # ========================================================
     # AVATAR STATE
     # ========================================================
 
-    def set_state(self, state: ReceptionState):
-
-        """
-        Synchronize ReceptionController state with AvatarController.
-        """
+    def reception_to_avatar_state(
+        self,
+        reception_state: ReceptionState,
+    ) -> AvatarState:
 
         mapping = {
-
             ReceptionState.IDLE:
                 AvatarState.IDLE,
 
@@ -319,615 +299,888 @@ class PhysicalReceptionist:
                 AvatarState.VISITOR_LEFT,
         }
 
-        avatar_state = mapping.get(state)
-
-        if avatar_state is not None:
-
-            self.avatar.set_state(
-                avatar_state
-            )
-
-            print(
-                f"[AVATAR] {avatar_state.value}"
-            )
-
-
-    # ========================================================
-    # SPEAK
-    # ========================================================
-
-    def speak(self, text: str):
-
-        if not text:
-            return
-
-        self.set_state(
-            ReceptionState.SPEAKING
+        return mapping.get(
+            reception_state,
+            AvatarState.IDLE,
         )
 
-        self.speaker.speak(text)
+
+    async def sync_avatar_state(self):
+
+        reception_state = self.reception.state
+
+        avatar_state = self.reception_to_avatar_state(
+            reception_state
+        )
+
+        self.avatar.set_state(
+            avatar_state
+        )
+
+        print(
+            f"[AVATAR] {avatar_state.value}"
+        )
+
+        await self.broadcast_avatar_state()
+
+
+    async def sync_if_reception_changed(
+        self,
+        previous_state: ReceptionState,
+    ):
+
+        if self.reception.state != previous_state:
+
+            # ReceptionController already prints the
+            # state transition. Do NOT print it again here.
+            await self.sync_avatar_state()
+
+
+    # ========================================================
+    # CONVERSATION ID
+    # ========================================================
+
+    def create_conversation_id(
+        self,
+        visitor_id: int,
+    ) -> str:
+
+        timestamp = datetime.now().strftime(
+            "%Y%m%d_%H%M%S_%f"
+        )
+
+        return (
+            f"physical-visitor-{visitor_id}-{timestamp}"
+        )
+
+
+    # ========================================================
+    # TTS
+    # ========================================================
+
+    async def speak(
+        self,
+        text: str,
+    ) -> None:
+        """
+        Speak receptionist response.
+
+        pyttsx3 is intentionally called directly rather than
+        through asyncio.to_thread() because the Windows TTS
+        engine is COM-based.
+        """
+
+        if not text or not text.strip():
+            return
+
+        self.reception.start_speaking()
+
+        await self.sync_avatar_state()
+
+        print()
+        print("AI RECEPTIONIST")
+        print(text)
+        print()
+
+        try:
+
+            self.speaker.speak(text)
+
+        except Exception as error:
+
+            print(
+                f"[TTS ERROR] {error}"
+            )
+
+        finally:
+
+            # Greeting and normal AI responses return to
+            # listening when a visitor session is active.
+            if self.visitor_session_active:
+
+                self.reception.return_to_listening()
+
+                await self.sync_avatar_state()
+
+                print(
+                    "[RECEPTION] Ready for visitor input."
+                )
 
 
     # ========================================================
     # GREETING
     # ========================================================
 
-    def greet_visitor(self):
+    async def greet_visitor(
+        self,
+        visitor_id: int,
+    ):
+
+        self.current_visitor_id = visitor_id
+
+        self.conversation_id = (
+            self.create_conversation_id(
+                visitor_id
+            )
+        )
+
+        self.visitor_session_active = True
 
         print()
-        print("=" * 70)
-        print("GREETING VISITOR")
-        print("=" * 70)
-
-        self.set_state(
-            ReceptionState.GREETING
+        print("=" * 60)
+        print(
+            f"NEW VISITOR DETECTED — Visitor #{visitor_id}"
         )
-
-        self.speak(
-            self.GREETING_TEXT
+        print(
+            f"Conversation ID: {self.conversation_id}"
         )
+        print("=" * 60)
 
-        self.set_state(
-            ReceptionState.LISTENING
+        await self.sync_avatar_state()
+
+        await self.speak(
+            GREETING_TEXT
         )
 
 
     # ========================================================
-    # RECORD VISITOR
+    # AUDIO RECORDING
     # ========================================================
 
-    def record_visitor(self) -> Optional[Path]:
+    async def record_visitor_audio(self) -> Optional[Path]:
 
-        recordings_dir = (
-            PROJECT_ROOT
-            / "voice"
-            / "recordings"
-        )
+        if not self.visitor_session_active:
+            return None
 
-        recordings_dir.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        timestamp = time.strftime(
-            "%Y%m%d_%H%M%S"
-        )
-
-        audio_path = (
-            recordings_dir
-            / f"phase9_{timestamp}.wav"
-        )
-
-        self.set_state(
-            ReceptionState.LISTENING
+        print()
+        print(
+            f"[VOICE] Recording visitor audio "
+            f"for {RECORDING_SECONDS} seconds..."
         )
 
         try:
 
-            audio = self.microphone.record(
-                duration=self.microphone_duration
+            recording = await asyncio.to_thread(
+                self.microphone.record,
+                RECORDING_SECONDS,
             )
-
-            level = (
-                self.microphone
-                .get_audio_level(audio)
-            )
-
-            print(
-                f"Microphone RMS level: {level:.6f}"
-            )
-
-            if level <= 0.0001:
-
-                print(
-                    "No useful microphone audio detected."
-                )
-
-                return None
-
-            self.microphone.save_wav(
-                audio,
-                str(audio_path),
-            )
-
-            return audio_path
 
         except Exception as error:
 
             print(
-                f"Microphone error: {error}"
+                f"[MIC ERROR] {error}"
             )
 
             return None
 
+        if recording is None:
+            print("[MIC ERROR] No audio recorded.")
+            return None
 
-    # ========================================================
-    # TRANSCRIBE
-    # ========================================================
-
-    def transcribe(
-        self,
-        audio_path: Path,
-    ) -> str:
-
-        self.set_state(
-            ReceptionState.THINKING
+        timestamp = datetime.now().strftime(
+            "%Y%m%d_%H%M%S_%f"
         )
 
-        print()
-        print("Transcribing visitor speech...")
+        audio_file = (
+            RECORDINGS_DIR
+            / f"physical_{timestamp}.wav"
+        )
 
         try:
 
-            text = self.stt.transcribe_wav(
-                str(audio_path)
-            )
+            with wave.open(
+                str(audio_file),
+                "wb",
+            ) as wav_file:
 
-            text = text.strip()
+                wav_file.setnchannels(
+                    self.microphone.channels
+                )
 
-            print(
-                f"Visitor: {text}"
-            )
+                wav_file.setsampwidth(2)
 
-            return text
+                wav_file.setframerate(
+                    self.microphone.sample_rate
+                )
+
+                wav_file.writeframes(
+                    recording.tobytes()
+                )
 
         except Exception as error:
 
             print(
-                f"STT error: {error}"
+                f"[AUDIO SAVE ERROR] {error}"
+            )
+
+            return None
+
+        print(
+            f"[VOICE] Audio saved: "
+            f"{audio_file.name}"
+        )
+
+        return audio_file
+
+
+    # ========================================================
+    # SPEECH TO TEXT
+    # ========================================================
+
+    async def transcribe_audio(
+        self,
+        audio_file: Path,
+    ) -> str:
+
+        self.reception.start_thinking()
+
+        await self.sync_avatar_state()
+
+        print()
+        print("[STT] Sending audio to Groq Whisper...")
+
+        try:
+
+            transcript = await asyncio.to_thread(
+                self.stt.transcribe_wav,
+                str(audio_file),
+            )
+
+        except Exception as error:
+
+            print(
+                f"[STT ERROR] {error}"
             )
 
             return ""
 
+        transcript = (
+            transcript or ""
+        ).strip()
 
-    # ========================================================
-    # AI RESPONSE
-    # ========================================================
-
-    def generate_response(
-        self,
-        visitor_text: str,
-    ) -> str:
-
-        self.set_state(
-            ReceptionState.THINKING
+        print(
+            f"[STT] Transcription: "
+            f"{transcript or '[empty]'}"
         )
 
+        return transcript
+
+
+    # ========================================================
+    # TRANSCRIPT VALIDATION
+    # ========================================================
+
+    def is_meaningful_transcript(
+        self,
+        transcript: str,
+    ) -> bool:
+
+        if not transcript:
+            return False
+
+        text = transcript.strip()
+
+        if len(text) < MINIMUM_TRANSCRIPT_LENGTH:
+            return False
+
+        ignored = {
+            ".",
+            "..",
+            "...",
+            "。",
+            "…",
+        }
+
+        if text in ignored:
+            return False
+
+        # Require at least one alphabetic character.
+        if not any(
+            character.isalpha()
+            for character in text
+        ):
+            return False
+
+        return True
+
+
+    # ========================================================
+    # AI BRAIN
+    # ========================================================
+
+    async def ask_ai_brain(
+        self,
+        transcript: str,
+    ) -> Optional[str]:
+
+        if not self.conversation_id:
+            print(
+                "[AI ERROR] Missing conversation ID."
+            )
+            return None
+
         print()
-        print("AI Brain processing...")
+        print("[AI BRAIN] Processing visitor request...")
+        print(
+            f"[AI BRAIN] Query: {transcript}"
+        )
 
         try:
 
-            response = (
-                self.ai_brain.process(
-                    visitor_text
-                )
+            result = await chat(
+                query=transcript,
+                org_id=ORG_ID,
+                conversation_id=self.conversation_id,
+                channel=CHANNEL,
+                org_name=ORG_NAME,
             )
-
-            response = response.strip()
-
-            if not response:
-
-                return (
-                    "I am sorry, I do not have "
-                    "a response for that yet."
-                )
-
-            print(
-                f"AI: {response}"
-            )
-
-            return response
 
         except Exception as error:
 
             print(
-                f"AI Brain error: {error}"
+                f"[AI ERROR] {error}"
             )
 
-            return (
-                "I am sorry, I am having "
-                "trouble processing your request."
+            return None
+
+        response = str(
+            result.get(
+                "response",
+                "",
             )
+        ).strip()
 
+        intent = result.get(
+            "intent",
+            "unknown",
+        )
 
-    # ========================================================
-    # COMPLETE CONVERSATION TURN
-    # ========================================================
+        confidence = result.get(
+            "confidence",
+            0.0,
+        )
 
-    def handle_conversation_turn(self):
+        language = result.get(
+            "language",
+            "unknown",
+        )
+
+        handoff_required = result.get(
+            "handoff_required",
+            False,
+        )
+
+        handoff_department = result.get(
+            "handoff_department",
+            "",
+        )
+
+        sources = result.get(
+            "sources",
+            [],
+        )
 
         print()
-        print("-" * 70)
-        print("LISTENING TO VISITOR")
-        print("-" * 70)
-
-        audio_path = (
-            self.record_visitor()
-        )
-
-        if audio_path is None:
-
-            self.speak(
-                self.NO_INPUT_TEXT
-            )
-
-            self.set_state(
-                ReceptionState.LISTENING
-            )
-
-            return
-
-
-        visitor_text = (
-            self.transcribe(
-                audio_path
-            )
-        )
-
-
-        if not visitor_text:
-
-            self.speak(
-                self.NO_INPUT_TEXT
-            )
-
-            self.set_state(
-                ReceptionState.LISTENING
-            )
-
-            return
-
-
-        response = (
-            self.generate_response(
-                visitor_text
-            )
-        )
-
-
-        self.speak(
-            response
-        )
-
-
-        self.set_state(
-            ReceptionState.LISTENING
-        )
-
-
-    # ========================================================
-    # VISITOR ENTERED
-    # ========================================================
-
-    def visitor_entered(
-        self,
-        visitor_ids,
-    ):
-
-        print()
-        print("=" * 70)
+        print("[AI BRAIN RESULT]")
         print(
-            "VISITOR DETECTED:",
-            visitor_ids,
+            f"Intent: {intent}"
         )
-        print("=" * 70)
-
-        self.set_state(
-            ReceptionState.VISITOR_DETECTED
+        print(
+            f"Confidence: {confidence}"
+        )
+        print(
+            f"Language: {language}"
+        )
+        print(
+            f"Handoff required: "
+            f"{handoff_required}"
         )
 
-        self.interaction_active = True
+        if handoff_department:
+            print(
+                f"Handoff department: "
+                f"{handoff_department}"
+            )
 
-        self.greet_visitor()
+        print(
+            f"Response: {response}"
+        )
+
+        if not response:
+            print(
+                "[AI ERROR] AI returned empty response."
+            )
+            return None
+
+        return response
+
+
+    # ========================================================
+    # ONE CONVERSATION TURN
+    # ========================================================
+
+    async def process_conversation_turn(self):
+
+        if (
+            not self.visitor_session_active
+            or self.processing_turn
+        ):
+            return
+
+        self.processing_turn = True
+
+        try:
+
+            # ------------------------------------------------
+            # 1. Record
+            # ------------------------------------------------
+
+            audio_file = (
+                await self.record_visitor_audio()
+            )
+
+            if audio_file is None:
+                self.reception.return_to_listening()
+                await self.sync_avatar_state()
+                return
+
+            # ------------------------------------------------
+            # 2. Whisper
+            # ------------------------------------------------
+
+            transcript = await self.transcribe_audio(
+                audio_file
+            )
+
+            if not self.is_meaningful_transcript(
+                transcript
+            ):
+
+                print(
+                    "[STT] No meaningful speech detected."
+                )
+
+                self.reception.return_to_listening()
+
+                await self.sync_avatar_state()
+
+                return
+
+            # ------------------------------------------------
+            # 3. AI Brain
+            # ------------------------------------------------
+
+            response = await self.ask_ai_brain(
+                transcript
+            )
+
+            if not response:
+
+                response = (
+                    "I'm sorry, I couldn't process "
+                    "that request. Please try again."
+                )
+
+            # ------------------------------------------------
+            # 4. TTS
+            # ------------------------------------------------
+
+            await self.speak(
+                response
+            )
+
+        except Exception as error:
+
+            print()
+            print(
+                f"[CONVERSATION ERROR] {error}"
+            )
+
+            try:
+
+                self.reception.return_to_listening()
+
+                await self.sync_avatar_state()
+
+            except Exception:
+                pass
+
+        finally:
+
+            self.processing_turn = False
 
 
     # ========================================================
     # VISITOR LEFT
     # ========================================================
 
-    def visitor_left(self):
+    async def visitor_left(self):
+
+        if not self.current_visitor_id:
+            return
+
+        visitor_id = self.current_visitor_id
 
         print()
-        print("=" * 70)
-        print("VISITOR LEFT")
-        print("=" * 70)
+        print("=" * 60)
+        print(
+            f"VISITOR LEFT — Visitor #{visitor_id}"
+        )
+        print("=" * 60)
 
-        self.interaction_active = False
+        # ----------------------------------------------------
+        # End active session first.
+        # ----------------------------------------------------
 
-        self.set_state(
-            ReceptionState.VISITOR_LEFT
+        self.visitor_session_active = False
+
+        self.processing_turn = False
+
+        # ----------------------------------------------------
+        # Reception controller visitor-left state.
+        # ----------------------------------------------------
+
+        try:
+
+            self.reception.finish_interaction()
+
+        except Exception as error:
+
+            print(
+                f"[RECEPTION] Finish interaction: {error}"
+            )
+
+        await self.sync_avatar_state()
+
+        # ----------------------------------------------------
+        # Goodbye
+        # ----------------------------------------------------
+
+        await asyncio.sleep(
+            VISITOR_LEFT_GOODBYE_DELAY
         )
 
-        self.speak(
-            self.GOODBYE_TEXT
+        try:
+
+            self.reception.start_speaking()
+
+            await self.sync_avatar_state()
+
+            print()
+            print("AI RECEPTIONIST")
+            print(GOODBYE_TEXT)
+            print()
+
+            self.speaker.speak(
+                GOODBYE_TEXT
+            )
+
+        except Exception as error:
+
+            print(
+                f"[GOODBYE ERROR] {error}"
+            )
+
+        # ----------------------------------------------------
+        # Return to idle.
+        # ----------------------------------------------------
+
+        try:
+
+            self.reception.update_visitors([])
+
+        except Exception:
+            pass
+
+        self.current_visitor_id = None
+        self.conversation_id = None
+
+        await asyncio.sleep(0.5)
+
+        if self.reception.state != ReceptionState.IDLE:
+
+            try:
+                self.reception.finish_interaction()
+            except Exception:
+                pass
+
+        await self.sync_avatar_state()
+
+        print(
+            "[RECEPTION] Ready for next visitor."
         )
-
-        self.set_state(
-            ReceptionState.IDLE
-        )
-
-
-    # ========================================================
-    # CAMERA DISPLAY
-    # ========================================================
-
-    def draw_overlay(
-        self,
-        frame,
-        visitors,
-    ):
-
-        state = self.reception.get_status()
-
-        current_state = (
-            state.get("state", "idle")
-        )
-
-        visitor_count = len(
-            visitors
-        )
-
-        cv2.rectangle(
-            frame,
-            (10, 10),
-            (390, 125),
-            (15, 20, 35),
-            -1,
-        )
-
-        cv2.putText(
-            frame,
-            "AI RECEPTION",
-            (25, 38),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-
-        cv2.putText(
-            frame,
-            f"State: {current_state}",
-            (25, 68),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (0, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-
-        cv2.putText(
-            frame,
-            f"Visitors: {visitor_count}",
-            (25, 95),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (0, 255, 0),
-            2,
-            cv2.LINE_AA,
-        )
-
-        cv2.putText(
-            frame,
-            "Q = quit",
-            (25, 115),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.40,
-            (200, 200, 200),
-            1,
-            cv2.LINE_AA,
-        )
-
-        return frame
 
 
     # ========================================================
     # MAIN LOOP
     # ========================================================
 
-    def run(self):
+    async def run(self):
+
+        await self.start_websocket_server()
+
+        self.camera.start()
+
+        self.avatar.set_state(
+            AvatarState.IDLE
+        )
+
+        await self.broadcast_avatar_state()
 
         print()
-        print("=" * 70)
-        print("PHASE 9 - COMPLETE PHYSICAL RECEPTIONIST")
-        print("=" * 70)
+        print("=" * 60)
+        print("PHYSICAL RECEPTIONIST STARTED")
+        print("=" * 60)
         print()
-        print("Starting camera...")
-        print("Press Q to quit.")
+        print(
+            "Camera is running internally."
+        )
+        print(
+            "Camera view is hidden from the customer."
+        )
+        print()
+        print(
+            "Customer-facing interface:"
+        )
+        print(
+            "Avatar only"
+        )
+        print()
+        print(
+            f"Avatar WebSocket: "
+            f"ws://{WEBSOCKET_HOST}:{WEBSOCKET_PORT}"
+        )
+        print()
+        print(
+            "Press Ctrl+C in this terminal to stop."
+        )
         print()
 
-        self.running = True
+        previous_state = self.reception.state
 
         try:
 
             while self.running:
 
-                frame = (
-                    self.camera.read()
-                )
+                # --------------------------------------------
+                # Camera frame
+                # --------------------------------------------
+
+                frame = self.camera.read()
 
                 if frame is None:
 
                     print(
-                        "Camera frame unavailable."
+                        "[CAMERA] Failed to read frame."
                     )
 
-                    break
+                    await asyncio.sleep(0.05)
 
+                    continue
 
-                # ------------------------------------------------
-                # VISION
-                # ------------------------------------------------
+                # --------------------------------------------
+                # Visitor tracking
+                # --------------------------------------------
 
-                visitors = (
-                    self.tracker.track(
-                        frame
-                    )
+                visitors = self.tracker.track(
+                    frame
                 )
 
-
-                visitor_ids = {
+                visitor_ids = [
                     visitor["visitor_id"]
                     for visitor in visitors
-                }
+                ]
 
+                # --------------------------------------------
+                # Update reception state
+                # --------------------------------------------
 
-                # ------------------------------------------------
-                # UPDATE RECEPTION CONTROLLER
-                # ------------------------------------------------
+                previous_state = (
+                    self.reception.state
+                )
 
                 self.reception.update_visitors(
-                    list(visitor_ids)
-                )
-
-
-                # ------------------------------------------------
-                # DRAW TRACKING
-                # ------------------------------------------------
-
-                frame = (
-                    self.tracker.draw_tracks(
-                        frame,
-                        visitors
-                    )
-                )
-
-
-                # ------------------------------------------------
-                # VISITOR ARRIVAL
-                # ------------------------------------------------
-
-                new_visitors = (
-                    visitor_ids
-                    - self.last_visitor_ids
-                )
-
-
-                if (
-                    new_visitors
-                    and not self.interaction_active
-                ):
-
-                    self.visitor_entered(
-                        new_visitors
-                    )
-
-
-                # ------------------------------------------------
-                # CONVERSATION
-                # ------------------------------------------------
-
-                if (
-                    self.interaction_active
-                    and visitor_ids
-                ):
-
-                    self.handle_conversation_turn()
-
-
-                # ------------------------------------------------
-                # VISITOR LEFT
-                # ------------------------------------------------
-
-                if (
-                    self.interaction_active
-                    and not visitor_ids
-                ):
-
-                    self.visitor_left()
-
-
-                self.last_visitor_ids = (
                     visitor_ids
                 )
 
+                await self.sync_if_reception_changed(
+                    previous_state
+                )
 
-                # ------------------------------------------------
-                # OVERLAY
-                # ------------------------------------------------
+                current_state = (
+                    self.reception.state
+                )
 
-                frame = (
-                    self.draw_overlay(
-                        frame,
-                        visitors,
+                # --------------------------------------------
+                # New visitor greeting
+                # --------------------------------------------
+
+                if (
+                    current_state
+                    == ReceptionState.GREETING
+                    and not self.visitor_session_active
+                ):
+
+                    active_visitors = (
+                        self.reception.get_active_visitors()
                     )
-                )
 
+                    if active_visitors:
 
-                cv2.imshow(
-                    "AI Reception - Phase 9",
-                    frame,
-                )
+                        visitor_id = (
+                            self.reception.primary_visitor_id
+                        )
 
+                        if visitor_id is None:
 
-                key = (
-                    cv2.waitKey(1)
-                    & 0xFF
-                )
+                            visitor_id = (
+                                active_visitors[0]
+                            )
 
+                        await self.greet_visitor(
+                            visitor_id
+                        )
 
-                if key == ord("q"):
+                # --------------------------------------------
+                # Visitor conversation
+                # --------------------------------------------
 
-                    self.running = False
+                elif (
+                    current_state
+                    == ReceptionState.LISTENING
+                    and self.visitor_session_active
+                    and not self.processing_turn
+                ):
 
+                    await self.process_conversation_turn()
 
-        except KeyboardInterrupt:
+                # --------------------------------------------
+                # Visitor left
+                # --------------------------------------------
 
-            print(
-                "\nReception stopped by user."
-            )
+                elif (
+                    current_state
+                    == ReceptionState.VISITOR_LEFT
+                    and self.current_visitor_id is not None
+                ):
+
+                    await self.visitor_left()
+
+                await asyncio.sleep(0.01)
 
         finally:
 
-            self.shutdown()
+            await self.shutdown()
 
 
     # ========================================================
     # SHUTDOWN
     # ========================================================
 
-    def shutdown(self):
+    async def shutdown(self):
 
-        print()
-        print("=" * 70)
-        print("SHUTTING DOWN AI RECEPTION")
-        print("=" * 70)
+        if not self.running:
+            return
 
         self.running = False
 
-        try:
-            self.speaker.stop()
-        except Exception:
-            pass
-
-        try:
-            self.camera.release()
-        except Exception:
-            pass
-
-        cv2.destroyAllWindows()
-
-        print("Camera released.")
-        print("Speaker stopped.")
-        print("Reception system stopped.")
         print()
+        print("=" * 60)
+        print("SHUTTING DOWN AI RECEPTIONIST")
+        print("=" * 60)
+
+        # ----------------------------------------------------
+        # Stop speaker
+        # ----------------------------------------------------
+
+        try:
+
+            self.speaker.stop()
+
+        except Exception:
+            pass
+
+        # ----------------------------------------------------
+        # Camera
+        # ----------------------------------------------------
+
+        try:
+
+            self.camera.release()
+
+        except Exception as error:
+
+            print(
+                f"[SHUTDOWN] Camera error: {error}"
+            )
+
+        # ----------------------------------------------------
+        # WebSocket
+        # ----------------------------------------------------
+
+        if self.websocket_server is not None:
+
+            try:
+
+                self.websocket_server.close()
+
+                await self.websocket_server.wait_closed()
+
+                print(
+                    "[WEBSOCKET] Server closed."
+                )
+
+            except Exception as error:
+
+                print(
+                    f"[WEBSOCKET] Shutdown error: "
+                    f"{error}"
+                )
+
+        # ----------------------------------------------------
+        # Avatar clients
+        # ----------------------------------------------------
+
+        for websocket in list(
+            self.avatar_clients
+        ):
+
+            try:
+
+                await websocket.close()
+
+            except Exception:
+                pass
+
+        self.avatar_clients.clear()
+
+        print(
+            "AI Receptionist stopped."
+        )
 
 
 # ============================================================
-# MAIN
+# ENTRY POINT
 # ============================================================
 
-def main():
+async def main():
 
-    receptionist = PhysicalReceptionist(
-        camera_index=0,
-        microphone_duration=5.0,
-    )
+    receptionist = PhysicalReceptionist()
 
-    receptionist.run()
+    await receptionist.run()
 
 
 if __name__ == "__main__":
-    main()
+
+    try:
+
+        asyncio.run(
+            main()
+        )
+
+    except KeyboardInterrupt:
+
+        print()
+        print(
+            "Receptionist stopped by user."
+        )
