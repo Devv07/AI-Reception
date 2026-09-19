@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   LayoutDashboard,
   Radio,
@@ -18,7 +18,7 @@ import {
   Building,
   Columns,
 } from 'lucide-react';
-import { useDemoStore } from '../../services/demoStore';
+import { DashboardService } from '../../services/dashboardService';
 import { DemoController } from '../reception/DemoController';
 
 interface DashboardShellProps {
@@ -37,11 +37,27 @@ export const DashboardShell: React.FC<DashboardShellProps> = ({
   children,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const demo = useDemoStore();
+  const [dashboardCounts, setDashboardCounts] = useState({ appointments: 0, tickets: 0, handoffs: 0 });
 
-  const openTicketsCount = demo.tickets.filter((t) => t.status !== 'Resolved').length;
-  const todayAppointmentsCount = demo.appointments.length;
-  const hasHandoffAlert = demo.handoffAlert?.isActive;
+  useEffect(() => {
+    Promise.all([
+      DashboardService.getAppointments(),
+      DashboardService.getTickets(),
+      DashboardService.getConversations(),
+    ]).then(([appointments, tickets, conversations]) => {
+      setDashboardCounts({
+        appointments: appointments.length,
+        tickets: tickets.filter((ticket) => ticket.status !== 'Resolved').length,
+        handoffs: conversations.filter((conversation) => conversation.status === 'Human handoff').length,
+      });
+    }).catch(() => {
+      setDashboardCounts({ appointments: 0, tickets: 0, handoffs: 0 });
+    });
+  }, [currentPath]);
+
+  const openTicketsCount = dashboardCounts.tickets;
+  const todayAppointmentsCount = dashboardCounts.appointments;
+  const hasHandoffAlert = dashboardCounts.handoffs > 0;
 
   const navItems = [
     { name: 'Overview', path: '/dashboard', icon: LayoutDashboard },

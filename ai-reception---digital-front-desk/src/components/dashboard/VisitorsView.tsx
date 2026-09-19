@@ -1,14 +1,31 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Search, Users, Clock, MapPin, Radio } from 'lucide-react';
-import { useDemoStore } from '../../services/demoStore';
-import { EmptyState } from './StateViews';
+import { DashboardService } from '../../services/dashboardService';
+import { EmptyState, ErrorState, LoadingState } from './StateViews';
+import { VisitorRecord } from '../../types/dashboard';
 
 export const VisitorsView: React.FC = () => {
-  const demo = useDemoStore();
+  const [visitors, setVisitors] = useState<VisitorRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
 
-  const filteredVisitors = demo.visitors.filter((v) => {
+  const loadVisitors = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      setVisitors(await DashboardService.getVisitors());
+    } catch (err: any) {
+      setError(err?.message || 'Failed to fetch visitors');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadVisitors(); }, []);
+
+  const filteredVisitors = visitors.filter((v) => {
     if (statusFilter !== 'all' && v.status.toLowerCase() !== statusFilter.toLowerCase()) {
       return false;
     }
@@ -31,7 +48,7 @@ export const VisitorsView: React.FC = () => {
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-bold text-white tracking-tight">Visitor Presence Logs</h2>
             <span className="text-xs font-mono-code px-2 py-0.5 rounded-full bg-blue-950 border border-blue-800 text-blue-300">
-              {demo.visitors.length} Logged
+              {visitors.length} Logged
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
@@ -56,7 +73,7 @@ export const VisitorsView: React.FC = () => {
             onChange={(e) => setStatusFilter(e.target.value)}
             className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 focus:outline-none focus:border-blue-500 cursor-pointer"
           >
-            <option value="all">All Statuses ({demo.visitors.length})</option>
+            <option value="all">All Statuses ({visitors.length})</option>
             <option value="active">Active</option>
             <option value="needs staff">Needs Staff</option>
             <option value="departed">Departed</option>
@@ -64,7 +81,7 @@ export const VisitorsView: React.FC = () => {
         </div>
       </div>
 
-      {filteredVisitors.length === 0 ? (
+      {loading ? <LoadingState message="Loading visitor records..." /> : error ? <ErrorState title="Visitors Error" error={error} onRetry={loadVisitors} /> : filteredVisitors.length === 0 ? (
         <EmptyState
           title="No visitors matched"
           description="Try modifying your search or status filter parameters."

@@ -136,16 +136,6 @@ export const ReceptionHeader: React.FC<ReceptionHeaderProps> = ({
           >
             English
           </button>
-          <button
-            onClick={() => onLanguageChange('ne')}
-            className={`px-2.5 py-1 rounded-md font-nepali font-medium transition ${
-              language === 'ne'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            नेपाली
-          </button>
         </div>
 
         {/* Audio Mute/Unmute Toggle */}

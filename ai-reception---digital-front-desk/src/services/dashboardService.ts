@@ -11,6 +11,100 @@ import {
 import { KNOWLEDGE_SOURCES, DEPARTMENTS } from '../data/tcmitData';
 import { DepartmentInfo } from '../types/reception';
 import { demoStore } from './demoStore';
+import { apiClient, BackendAppointment, BackendConversation, BackendDepartment, BackendTicket, BackendVisitor, getAccessToken } from './apiClient';
+
+async function ensureDashboardAuth() {
+  if (getAccessToken()) return;
+  const email = import.meta.env.VITE_DASHBOARD_EMAIL;
+  const password = import.meta.env.VITE_DASHBOARD_PASSWORD;
+  if (!email || !password) {
+    throw new Error('Dashboard credentials are not configured. Set VITE_DASHBOARD_EMAIL and VITE_DASHBOARD_PASSWORD.');
+  }
+  await apiClient.login(email, password);
+}
+
+function mapConversation(item: BackendConversation): ConversationItem {
+  return {
+    id: item.id,
+    visitorId: item.visitor_id,
+    visitorName: item.visitor_id,
+    channel: item.channel === 'phone' ? 'Phone' : 'Reception',
+    intent: item.messages.find((message) => message.intent)?.intent || 'general_information',
+    startedAt: item.started_at,
+    duration: 'Recorded session',
+    status: item.status === 'human_requested' ? 'Human handoff' : item.status === 'active' ? 'Active' : 'Completed',
+    language: 'en',
+    messageCount: item.messages.length,
+    sourcesUsed: [],
+    actionTaken: item.status === 'human_requested' ? 'Human assistance requested' : undefined,
+    messages: item.messages.map((message) => ({
+      id: message.id,
+      sender: message.role === 'assistant' ? 'AI' : 'USER',
+      text: message.content,
+      timestamp: message.created_at,
+    })),
+  };
+}
+
+function mapAppointment(item: BackendAppointment): AppointmentRecord {
+  return {
+    id: item.id,
+    referenceCode: `APT-${item.id.slice(0, 8).toUpperCase()}`,
+    visitorName: item.visitor_id,
+    contact: '',
+    targetPerson: item.requested_staff || 'Assigned staff',
+    department: item.department_id,
+    date: item.appointment_date,
+    timeSlot: item.appointment_time,
+    purpose: item.purpose,
+    status: item.status === 'confirmed' ? 'Confirmed' : item.status === 'completed' ? 'Completed' : item.status === 'cancelled' ? 'Cancelled' : 'Pending',
+    createdAt: item.created_at,
+  };
+}
+
+function mapTicket(item: BackendTicket): TicketRecord {
+  return {
+    id: item.id,
+    ticketId: `TCK-${item.id.slice(0, 8).toUpperCase()}`,
+    issue: item.description,
+    department: item.department_id,
+    priority: item.priority === 'high' ? 'High' : item.priority === 'low' ? 'Low' : 'Normal',
+    status: item.status === 'in_progress' ? 'In Progress' : item.status === 'resolved' || item.status === 'closed' ? 'Resolved' : 'Open',
+    visitorName: item.visitor_id,
+    contact: '',
+    assignedStaff: item.assigned_user || 'Unassigned',
+    createdAt: item.created_at,
+  };
+}
+
+function mapDepartment(item: BackendDepartment): DepartmentInfo {
+  return {
+    id: item.id,
+    name: item.name,
+    nameNe: item.name,
+    code: item.id.slice(0, 6).toUpperCase(),
+    block: item.location || 'Main campus',
+    floor: '',
+    room: '',
+    hours: '',
+    officer: '',
+    contact: item.contact || '',
+  };
+}
+
+function mapVisitor(item: BackendVisitor): VisitorRecord {
+  return {
+    id: item.id,
+    code: item.code,
+    firstSeen: item.first_seen,
+    lastInteraction: item.last_interaction,
+    purpose: item.purpose,
+    department: item.department,
+    status: item.status,
+    channel: item.channel,
+    duration: item.duration,
+  };
+}
 
 // Mock in-memory database for reactive dashboard actions
 let MOCK_APPOINTMENTS: AppointmentRecord[] = [
@@ -520,55 +614,53 @@ export class DashboardService {
    * Returns high-level overview metrics for the operational control center.
    */
   static async getOverviewMetrics() {
-    await new Promise((r) => setTimeout(r, 120));
-    const s = demoStore.getState();
-    const todayApts = s.appointments.filter(
-      (a) =>
-        a.date === '2026-09-18' ||
-        a.createdAt.includes('AM') ||
-        a.createdAt.includes('PM') ||
-        a.createdAt === 'Just now'
-    );
-    const openTcks = s.tickets.filter((t) => t.status !== 'Resolved');
-    const handoffsCount = s.liveEvents.filter((e) => e.type === 'handoff_requested').length;
+    await ensureDashboardAuth();
+    const [visitors, conversations, appointments, tickets] = await Promise.all([
+      apiClient.listVisitors(),
+      apiClient.listConversations(),
+      apiClient.listAppointments(),
+      apiClient.listTickets(),
+    ]);
+    const today = new Date().toISOString().slice(0, 10);
+    const todayApts = appointments.filter((item) => item.appointment_date === today);
+    const openTcks = tickets.filter((item) => !['resolved', 'closed'].includes(item.status));
+    const handoffsCount = conversations.filter((item) => item.status === 'human_requested').length;
 
     return {
       todayVisitors: {
         title: "Today's Visitors",
-        value: s.visitors.length + 16,
-        change: '+14% vs yesterday',
+        value: visitors.length,
+        change: 'Persisted visitor records',
         trend: 'up' as const,
         subtext: '88% handled autonomously by AI',
       },
       conversations: {
         title: 'AI Conversations',
-        value: s.conversations.length + 29,
-        change: '+18% this week',
+        value: conversations.length,
+        change: 'Persisted conversation records',
         trend: 'up' as const,
         subtext: 'Average duration 1m 58s',
       },
       appointments: {
         title: 'Appointments Today',
         value: todayApts.length,
-        change: `${todayApts.filter((a) => a.status === 'Confirmed').length} confirmed, ${
-          todayApts.filter((a) => a.status === 'Pending').length
-        } pending`,
+        change: `${todayApts.filter((a) => a.status === 'confirmed').length} confirmed, ${todayApts.filter((a) => a.status === 'pending').length} pending`,
         trend: 'neutral' as const,
         subtext: 'Synchronized live with Reception Kiosk',
       },
       openTickets: {
         title: 'Open Support Tickets',
         value: openTcks.length,
-        change: `${openTcks.filter((t) => t.priority === 'High').length} High priority`,
+        change: `${openTcks.filter((t) => t.priority === 'high').length} High priority`,
         trend: 'down' as const,
         subtext: 'Auto-dispatched by AI Receptionist',
       },
       handoffs: {
         title: 'Human Handoffs',
         value: Math.max(handoffsCount, 3),
-        change: s.handoffAlert?.isActive ? 'Alert Active at Counter A-102' : 'All acknowledged',
-        trend: (s.handoffAlert?.isActive ? 'up' : 'neutral') as 'up' | 'neutral' | 'down',
-        subtext: s.handoffAlert?.isActive ? 'Action required immediately' : 'Average response 45s',
+        change: handoffsCount ? `${handoffsCount} conversations awaiting staff` : 'No pending handoffs',
+        trend: (handoffsCount ? 'up' : 'neutral') as 'up' | 'neutral' | 'down',
+        subtext: 'Persisted conversation status',
       },
     };
   }
@@ -619,9 +711,8 @@ export class DashboardService {
    * Fetch conversations list with optional search and filter.
    */
   static async getConversations(search?: string, channelFilter?: string) {
-    await new Promise((r) => setTimeout(r, 150));
-    const s = demoStore.getState();
-    let items = [...s.conversations];
+    await ensureDashboardAuth();
+    let items = (await apiClient.listConversations()).map(mapConversation);
     if (channelFilter && channelFilter !== 'all') {
       items = items.filter((c) => c.channel.toLowerCase() === channelFilter.toLowerCase());
     }
@@ -642,22 +733,16 @@ export class DashboardService {
    * Fetch specific conversation detail.
    */
   static async getConversationDetail(id: string) {
-    await new Promise((r) => setTimeout(r, 100));
-    const s = demoStore.getState();
-    const found = s.conversations.find((c) => c.id === id);
-    if (!found) {
-      throw new Error(`Conversation ${id} not found.`);
-    }
-    return found;
+    await ensureDashboardAuth();
+    return mapConversation(await apiClient.getConversation(id));
   }
 
   /**
    * Fetch visitors record list.
    */
   static async getVisitors(search?: string, statusFilter?: string) {
-    await new Promise((r) => setTimeout(r, 120));
-    const s = demoStore.getState();
-    let items = [...s.visitors];
+    await ensureDashboardAuth();
+    let items = (await apiClient.listVisitors()).map(mapVisitor);
     if (statusFilter && statusFilter !== 'all') {
       items = items.filter((v) => v.status.toLowerCase() === statusFilter.toLowerCase());
     }
@@ -677,9 +762,8 @@ export class DashboardService {
    * Fetch appointments with date filtering.
    */
   static async getAppointments(filter?: string) {
-    await new Promise((r) => setTimeout(r, 120));
-    const s = demoStore.getState();
-    let items = [...s.appointments];
+    await ensureDashboardAuth();
+    let items = (await apiClient.listAppointments()).map(mapAppointment);
     if (filter && filter !== 'all') {
       items = items.filter((a) => a.status.toLowerCase() === filter.toLowerCase());
     }
@@ -690,21 +774,16 @@ export class DashboardService {
    * Update appointment status.
    */
   static async updateAppointmentStatus(id: string, status: AppointmentRecord['status']) {
-    await new Promise((r) => setTimeout(r, 150));
-    demoStore.setState((prev) => ({
-      appointments: prev.appointments.map((a) => (a.id === id ? { ...a, status } : a)),
-    }));
-    demoStore.logLiveEvent('session_ended', `Appointment ${id} status marked as "${status}"`);
-    return { success: true };
+    await ensureDashboardAuth();
+    return mapAppointment(await apiClient.updateAppointment(id, status));
   }
 
   /**
    * Fetch tickets list.
    */
   static async getTickets(filter?: string) {
-    await new Promise((r) => setTimeout(r, 120));
-    const s = demoStore.getState();
-    let items = [...s.tickets];
+    await ensureDashboardAuth();
+    let items = (await apiClient.listTickets()).map(mapTicket);
     if (filter && filter !== 'all') {
       items = items.filter((t) => t.status.toLowerCase() === filter.toLowerCase());
     }
@@ -715,12 +794,8 @@ export class DashboardService {
    * Update ticket status.
    */
   static async updateTicketStatus(id: string, status: TicketRecord['status']) {
-    await new Promise((r) => setTimeout(r, 150));
-    demoStore.setState((prev) => ({
-      tickets: prev.tickets.map((t) => (t.id === id ? { ...t, status } : t)),
-    }));
-    demoStore.logLiveEvent('session_ended', `Ticket ${id} status updated to "${status}"`);
-    return { success: true };
+    await ensureDashboardAuth();
+    return mapTicket(await apiClient.updateTicket(id, status));
   }
 
   /**
@@ -795,52 +870,22 @@ export class DashboardService {
    * Fetch departments.
    */
   static async getDepartments(): Promise<DepartmentInfo[]> {
-    await new Promise((r) => setTimeout(r, 300));
-    return [...DEPARTMENTS];
+    await ensureDashboardAuth();
+    return (await apiClient.listDepartments()).map(mapDepartment);
   }
 
   /**
    * Fetch analytics data for charts.
    */
   static async getAnalyticsData(timeframe = 'today'): Promise<AnalyticsData> {
-    await new Promise((r) => setTimeout(r, 450));
+    await ensureDashboardAuth();
+    const data = await apiClient.getAnalytics(timeframe);
     return {
-      visitorsByHour: [
-        { hour: '07:00', count: 2 },
-        { hour: '08:00', count: 5 },
-        { hour: '09:00', count: 12 },
-        { hour: '10:00', count: 18 },
-        { hour: '11:00', count: 14 },
-        { hour: '12:00', count: 9 },
-        { hour: '13:00', count: 11 },
-        { hour: '14:00', count: 16 },
-        { hour: '15:00', count: 8 },
-        { hour: '16:00', count: 4 },
-      ],
-      topIntents: [
-        { intent: 'BIT Admissions', count: 38 },
-        { intent: 'Fee & Payment', count: 22 },
-        { intent: 'Principal Meeting', count: 16 },
-        { intent: 'Campus Directory', count: 14 },
-        { intent: 'Exam & Admit Card', count: 10 },
-      ],
-      departmentDemand: [
-        { department: 'Admissions', requests: 42 },
-        { department: 'Accounts', requests: 28 },
-        { department: "Principal's Office", requests: 18 },
-        { department: 'Examination', requests: 12 },
-        { department: 'IT Support', requests: 8 },
-      ],
-      channelUsage: [
-        { name: 'Reception Kiosk (Voice)', value: 68 },
-        { name: 'Reception Kiosk (Touch/Text)', value: 22 },
-        { name: 'Front Desk Phone', value: 10 },
-      ],
-      outcomes: [
-        { outcome: 'Resolved by AI directly', percentage: 76 },
-        { outcome: 'Ticket / Appointment Created', percentage: 15 },
-        { outcome: 'Transferred to Staff', percentage: 9 },
-      ],
+      visitorsByHour: data.visitors_by_hour,
+      topIntents: data.top_intents,
+      departmentDemand: data.department_demand,
+      channelUsage: data.channel_usage,
+      outcomes: data.outcomes,
     };
   }
 

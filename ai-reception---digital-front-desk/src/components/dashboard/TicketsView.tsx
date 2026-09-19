@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Ticket as TicketIcon,
   AlertCircle,
@@ -8,21 +8,37 @@ import {
   Building,
 } from 'lucide-react';
 import { DashboardService } from '../../services/dashboardService';
-import { useDemoStore } from '../../services/demoStore';
-import { EmptyState } from './StateViews';
+import { EmptyState, ErrorState, LoadingState } from './StateViews';
 import { TicketRecord } from '../../types/dashboard';
 
 export const TicketsView: React.FC = () => {
-  const demo = useDemoStore();
+  const [tickets, setTickets] = useState<TicketRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('all');
 
-  const filteredTickets = demo.tickets.filter((t) => {
+  const loadTickets = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      setTickets(await DashboardService.getTickets());
+    } catch (err: any) {
+      setError(err?.message || 'Failed to fetch tickets');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadTickets(); }, []);
+
+  const filteredTickets = tickets.filter((t) => {
     if (filter === 'all') return true;
     return t.status.toLowerCase() === filter.toLowerCase();
   });
 
   const handleUpdateStatus = async (id: string, newStatus: TicketRecord['status']) => {
     await DashboardService.updateTicketStatus(id, newStatus);
+    await loadTickets();
   };
 
   return (
@@ -33,7 +49,7 @@ export const TicketsView: React.FC = () => {
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-bold text-white tracking-tight">Front-Desk Support Tickets</h2>
             <span className="text-xs font-mono-code px-2 py-0.5 rounded-full bg-blue-950 border border-blue-800 text-blue-300">
-              {demo.tickets.length} Active Tickets
+              {tickets.length} Active Tickets
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
@@ -47,7 +63,7 @@ export const TicketsView: React.FC = () => {
             onChange={(e) => setFilter(e.target.value)}
             className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 focus:outline-none focus:border-blue-500 cursor-pointer"
           >
-            <option value="all">All Statuses ({demo.tickets.length})</option>
+            <option value="all">All Statuses ({tickets.length})</option>
             <option value="open">Open</option>
             <option value="in progress">In Progress</option>
             <option value="resolved">Resolved</option>
@@ -55,7 +71,7 @@ export const TicketsView: React.FC = () => {
         </div>
       </div>
 
-      {filteredTickets.length === 0 ? (
+      {loading ? <LoadingState message="Loading support tickets..." /> : error ? <ErrorState title="Tickets Error" error={error} onRetry={loadTickets} /> : filteredTickets.length === 0 ? (
         <EmptyState
           title="No tickets found"
           description="There are currently no tickets matching this filter."

@@ -1,5 +1,9 @@
 from abc import ABC, abstractmethod
+import asyncio
+import inspect
+from typing import Any
 
+from app.core.config import get_settings
 from app.schemas import AIResponse
 
 
@@ -43,7 +47,7 @@ class MockAIProvider(AIProvider):
                 confidence=0.98,
                 action="human_handoff",
                 needs_human=True,
-                language=language,
+                language="en",
             )
 
         # Appointments
@@ -62,7 +66,7 @@ class MockAIProvider(AIProvider):
                 intent="appointment",
                 confidence=0.94,
                 action="book_appointment",
-                language=language,
+                language="en",
             )
 
         # Admissions
@@ -87,7 +91,27 @@ class MockAIProvider(AIProvider):
                 answer="I can help with admission requirements, eligibility, application procedures, and enrollment information.",
                 intent="admission_information",
                 confidence=0.95,
-                language=language,
+                language="en",
+            )
+
+        # Complaints take precedence over payment/fee keywords.
+        if any(
+            word in text
+            for word in (
+                "complaint",
+                "complain",
+                "issue",
+                "problem",
+                "unhappy",
+                "dissatisfied",
+            )
+        ):
+            return AIResponse(
+                answer="I'm sorry you're experiencing an issue. I can help record your complaint and connect you with the appropriate department.",
+                intent="complaint",
+                confidence=0.91,
+                action="create_ticket",
+                language="en",
             )
 
         # Fees / payments
@@ -107,7 +131,7 @@ class MockAIProvider(AIProvider):
                 answer="I can help with tuition fees, payment information, and payment-related support.",
                 intent="fee_information",
                 confidence=0.94,
-                language=language,
+                language="en",
             )
 
         # Scholarships
@@ -125,7 +149,7 @@ class MockAIProvider(AIProvider):
                 answer="I can help with scholarship and financial assistance information.",
                 intent="scholarship_information",
                 confidence=0.94,
-                language=language,
+                language="en",
             )
 
         # Departments
@@ -145,7 +169,7 @@ class MockAIProvider(AIProvider):
                 intent="department_information",
                 confidence=0.93,
                 action="get_department",
-                language=language,
+                language="en",
             )
 
         # Office / department location
@@ -162,10 +186,10 @@ class MockAIProvider(AIProvider):
         ):
             return AIResponse(
                 answer="Please tell me which department or office location you are looking for.",
-                intent="location",
+                intent="department_information",
                 confidence=0.90,
                 action="get_department",
-                language=language,
+                language="en",
             )
 
         # Office hours
@@ -186,7 +210,7 @@ class MockAIProvider(AIProvider):
                 answer="I can provide information about the college's office hours.",
                 intent="office_hours",
                 confidence=0.93,
-                language=language,
+                language="en",
             )
 
         # Contact information
@@ -206,27 +230,7 @@ class MockAIProvider(AIProvider):
                 answer="I can provide the college's contact information.",
                 intent="contact_information",
                 confidence=0.92,
-                language=language,
-            )
-
-        # Complaints
-        if any(
-            word in text
-            for word in (
-                "complaint",
-                "complain",
-                "issue",
-                "problem",
-                "unhappy",
-                "dissatisfied",
-            )
-        ):
-            return AIResponse(
-                answer="I'm sorry you're experiencing an issue. I can help record your complaint and connect you with the appropriate department.",
-                intent="complaint",
-                confidence=0.91,
-                action="create_ticket",
-                language=language,
+                language="en",
             )
 
         # General information
@@ -234,5 +238,69 @@ class MockAIProvider(AIProvider):
             answer="I can help with admissions, fees, scholarships, departments, office hours, appointments, contact information, complaints, and staff assistance.",
             intent="general_information",
             confidence=0.72,
-            language=language,
+            language="en",
         )
+
+
+class Member1AIProvider(AIProvider):
+    """Adapt Member 1's intent, RAG, and LLM pipeline to the core contract."""
+
+    def respond(
+        self,
+        message: str,
+        language: str,
+        context: list[dict[str, str]],
+    ) -> AIResponse:
+        from app.services.ai.member1.pipeline import respond
+
+        result = _run_async(respond(message, context))
+        return normalize_ai_response(result)
+
+
+LEGACY_INTENT_MAP = {
+    "greeting": "general_information",
+    "faq": "general_information",
+    "admission": "admission_information",
+    "fees": "fee_information",
+    "human_handoff": "human_assistance",
+    "location": "department_information",
+}
+
+LEGACY_ACTION_MAP = {
+    "answer": "answer_question",
+    "department_redirect": "get_department",
+}
+
+
+def normalize_ai_response(value: AIResponse | dict[str, Any]) -> AIResponse:
+    """Convert provider-specific output into the application's single contract."""
+    data = value.model_dump() if isinstance(value, AIResponse) else dict(value)
+    data["intent"] = LEGACY_INTENT_MAP.get(data.get("intent"), data.get("intent", "unknown"))
+    data["action"] = LEGACY_ACTION_MAP.get(data.get("action"), data.get("action"))
+    data["answer"] = data.get("answer", data.get("response", ""))
+    data["needs_human"] = data.get("needs_human", data.get("handoff_required", False))
+    data["language"] = "en"
+    sources = data.get("sources", [])
+    data["sources"] = [
+        source if isinstance(source, dict) else {"source": str(source)}
+        for source in sources
+    ]
+    return AIResponse.model_validate(data)
+
+
+def create_provider() -> AIProvider:
+    settings = get_settings()
+    if settings.ai_provider.lower() in {"member1", "groq", "rag"}:
+        return Member1AIProvider()
+    return MockAIProvider()
+
+
+def _run_async(value: Any) -> Any:
+    if not inspect.isawaitable(value):
+        return value
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(value)
+
+    raise RuntimeError("The Member 1 provider cannot run inside an active event loop")

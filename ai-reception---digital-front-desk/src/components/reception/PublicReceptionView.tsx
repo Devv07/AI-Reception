@@ -11,7 +11,7 @@ import { TCMIT_INFO, KNOWLEDGE_SOURCES } from '../../data/tcmitData';
 import { ReceptionService } from '../../services/receptionService';
 import { demoStore, useDemoStore } from '../../services/demoStore';
 import { ReceptionHeader } from './ReceptionHeader';
-import { AIOrb } from './AIOrb';
+import { VRMAvatar } from './VRMAvatar';
 import { SpeechTranscript } from './SpeechTranscript';
 import { VoiceControls } from './VoiceControls';
 import { TextInputFallback } from './TextInputFallback';
@@ -47,10 +47,11 @@ export const PublicReceptionView: React.FC<PublicReceptionViewProps> = ({
   isSplitView,
   onToggleSplitView,
 }) => {
+  const [conversationId, setConversationId] = React.useState<string | null>(() => sessionStorage.getItem('ai-reception.conversation-id'));
   // Shared reactive demo state
   const demo = useDemoStore();
   const state = demo.receptionState;
-  const language = demo.language;
+  const language: LanguageMode = demo.language;
   const audioEnabled = demo.audioEnabled;
   const sensorActive = demo.sensorActive;
   const userQuery = demo.userQuery;
@@ -61,6 +62,10 @@ export const PublicReceptionView: React.FC<PublicReceptionViewProps> = ({
   const activeTicket = demo.activeTicket;
   const isDirectoryOpen = demo.isDirectoryOpen;
   const isTextDrawerOpen = demo.isTextDrawerOpen;
+
+  useEffect(() => {
+    if (demo.language !== 'en') demoStore.setState({ language: 'en' });
+  }, [demo.language]);
 
   // Speech cancel ref
   const cancelSpeechRef = useRef<(() => void) | null>(null);
@@ -118,8 +123,10 @@ export const PublicReceptionView: React.FC<PublicReceptionViewProps> = ({
     try {
       const result = await ReceptionService.queryAssistant(
         queryText,
-        language === 'ne' ? 'ne' : 'en'
+        'en',
+        conversationId || undefined
       );
+      setConversationId(result.conversationId);
 
       // Handle Unknown Question / Non-verified state
       if (result.isUnknown) {
@@ -157,11 +164,9 @@ export const PublicReceptionView: React.FC<PublicReceptionViewProps> = ({
         demoStore.requestHandoff(result.answerEn);
       } else if (result.action === 'department_redirect') {
         demoStore.setState({ isDirectoryOpen: true });
-        const textToSpeak = language === 'ne' ? result.answerNe : result.answerEn;
-        speakResponse(textToSpeak, language === 'ne' ? 'ne' : 'en');
+          speakResponse(result.answerEn, 'en');
       } else {
-        const textToSpeak = language === 'ne' ? result.answerNe : result.answerEn;
-        speakResponse(textToSpeak, language === 'ne' ? 'ne' : 'en');
+        speakResponse(result.answerEn, 'en');
       }
     } catch {
       demoStore.setState({ receptionState: 'IDLE' });
@@ -253,9 +258,14 @@ export const PublicReceptionView: React.FC<PublicReceptionViewProps> = ({
     demoStore.executeStep(1);
     setTimeout(() => {
       if (demoStore.getState().receptionState === 'VISITOR_DETECTED') {
+        demoStore.setState({ receptionState: 'GREETING' });
+      }
+    }, 700);
+    setTimeout(() => {
+      if (demoStore.getState().receptionState === 'GREETING') {
         demoStore.setState({ receptionState: 'IDLE' });
       }
-    }, 3500);
+    }, 3200);
   };
 
   // Reset to ambient idle
@@ -273,7 +283,7 @@ export const PublicReceptionView: React.FC<PublicReceptionViewProps> = ({
       {/* 1. Reception Kiosk Header */}
       <ReceptionHeader
         language={language}
-        onLanguageChange={(l) => demoStore.setState({ language: l })}
+        onLanguageChange={() => demoStore.setState({ language: 'en' })}
         audioEnabled={audioEnabled}
         onToggleAudio={() => demoStore.setState({ audioEnabled: !audioEnabled })}
         sensorActive={sensorActive}
@@ -292,7 +302,7 @@ export const PublicReceptionView: React.FC<PublicReceptionViewProps> = ({
             transition={{ duration: 0.4 }}
             className="flex flex-col items-center text-center gap-2 max-w-2xl z-10"
           >
-            <AIOrb state="IDLE" onClick={triggerVisitorDetection} />
+            <VRMAvatar state="IDLE" onClick={triggerVisitorDetection} />
 
             <div className="space-y-1 mt-1">
               <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
@@ -428,9 +438,7 @@ export const PublicReceptionView: React.FC<PublicReceptionViewProps> = ({
               </button>
 
               <button
-                onClick={() => {
-                  demoStore.setState({ language: language === 'ne' ? 'en' : 'ne' });
-                }}
+                onClick={() => demoStore.setState({ language: 'en' })}
                 className="p-3 rounded-2xl bg-slate-900/80 hover:bg-slate-850 border border-slate-800 hover:border-blue-500/50 transition group flex flex-col gap-1.5 shadow-md"
               >
                 <div className="flex items-center justify-between">
@@ -438,10 +446,10 @@ export const PublicReceptionView: React.FC<PublicReceptionViewProps> = ({
                   <span className="text-[10px] text-slate-500 font-mono-code">Language</span>
                 </div>
                 <span className="text-xs font-semibold text-slate-200 group-hover:text-white">
-                  {language === 'ne' ? 'Switch to English' : 'नेपालीमा कुरा गर्नुहोस्'}
+                  English Reception
                 </span>
                 <span className="text-[11px] text-slate-400 line-clamp-1">
-                  {language === 'ne' ? 'Bilingual AI Voice' : 'द्विभाषी आवाज समर्थन'}
+                  English voice and text support
                 </span>
               </button>
             </div>
@@ -456,7 +464,7 @@ export const PublicReceptionView: React.FC<PublicReceptionViewProps> = ({
             exit={{ opacity: 0, scale: 0.96 }}
             className="flex flex-col items-center text-center gap-3"
           >
-            <AIOrb state="VISITOR_DETECTED" />
+            <VRMAvatar state="VISITOR_DETECTED" />
             <div className="p-3 bg-blue-950/60 border border-blue-500/50 rounded-2xl backdrop-blur-sm max-w-md">
               <div className="flex items-center justify-center gap-2 text-xs font-semibold text-blue-300 mb-1">
                 <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
@@ -475,12 +483,13 @@ export const PublicReceptionView: React.FC<PublicReceptionViewProps> = ({
         )}
 
         {/* States 3, 4, 5: Listening, Thinking, Speaking Conversation View */}
-        {(state === 'LISTENING' ||
+        {(state === 'GREETING' ||
+          state === 'LISTENING' ||
           state === 'THINKING' ||
           state === 'SPEAKING' ||
           (userQuery && state === 'IDLE')) && (
           <div className="w-full flex flex-col items-center gap-3 max-w-3xl">
-            <AIOrb
+            <VRMAvatar
               state={state}
               onClick={state === 'SPEAKING' ? handleStopSpeaking : undefined}
             />
@@ -503,6 +512,7 @@ export const PublicReceptionView: React.FC<PublicReceptionViewProps> = ({
             onCancel={() => demoStore.setState({ receptionState: 'IDLE' })}
             onConfirm={async (data) => {
               ReceptionService.playChime('success');
+              await ReceptionService.bookAppointment(data, conversationId || undefined);
               await demoStore.bookAppointment(data);
               demoStore.setState({ receptionState: 'COMPLETED' });
             }}
@@ -516,6 +526,7 @@ export const PublicReceptionView: React.FC<PublicReceptionViewProps> = ({
             onCancel={() => demoStore.setState({ receptionState: 'IDLE' })}
             onConfirm={async (data) => {
               ReceptionService.playChime('success');
+              await ReceptionService.createTicket(data, conversationId || undefined);
               await demoStore.createTicket(data);
               demoStore.setState({ receptionState: 'COMPLETED' });
             }}

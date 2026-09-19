@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Calendar as CalendarIcon,
   Clock,
@@ -9,21 +9,37 @@ import {
   Clock3,
 } from 'lucide-react';
 import { DashboardService } from '../../services/dashboardService';
-import { useDemoStore } from '../../services/demoStore';
-import { EmptyState } from './StateViews';
+import { EmptyState, ErrorState, LoadingState } from './StateViews';
 import { AppointmentRecord } from '../../types/dashboard';
 
 export const AppointmentsView: React.FC = () => {
-  const demo = useDemoStore();
+  const [appointments, setAppointments] = useState<AppointmentRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('all');
 
-  const filteredAppointments = demo.appointments.filter((a) => {
+  const loadAppointments = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      setAppointments(await DashboardService.getAppointments());
+    } catch (err: any) {
+      setError(err?.message || 'Failed to fetch appointments');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadAppointments(); }, []);
+
+  const filteredAppointments = appointments.filter((a) => {
     if (filter === 'all') return true;
     return a.status.toLowerCase() === filter.toLowerCase();
   });
 
   const handleUpdateStatus = async (id: string, newStatus: AppointmentRecord['status']) => {
     await DashboardService.updateAppointmentStatus(id, newStatus);
+    await loadAppointments();
   };
 
   return (
@@ -34,7 +50,7 @@ export const AppointmentsView: React.FC = () => {
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-bold text-white tracking-tight">Executive & Faculty Appointments</h2>
             <span className="text-xs font-mono-code px-2 py-0.5 rounded-full bg-blue-950 border border-blue-800 text-blue-300">
-              {demo.appointments.length} Total
+              {appointments.length} Total
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
@@ -48,7 +64,7 @@ export const AppointmentsView: React.FC = () => {
             onChange={(e) => setFilter(e.target.value)}
             className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 focus:outline-none focus:border-blue-500 cursor-pointer"
           >
-            <option value="all">All Appointments ({demo.appointments.length})</option>
+            <option value="all">All Appointments ({appointments.length})</option>
             <option value="confirmed">Confirmed</option>
             <option value="pending">Pending</option>
             <option value="completed">Completed</option>
@@ -57,7 +73,7 @@ export const AppointmentsView: React.FC = () => {
         </div>
       </div>
 
-      {filteredAppointments.length === 0 ? (
+      {loading ? <LoadingState message="Loading appointments..." /> : error ? <ErrorState title="Appointments Error" error={error} onRetry={loadAppointments} /> : filteredAppointments.length === 0 ? (
         <EmptyState
           title="No appointments found"
           description="There are currently no visitor appointments matching this filter."

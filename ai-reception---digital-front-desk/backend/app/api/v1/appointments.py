@@ -5,10 +5,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database.session import get_db
-from app.models import Appointment, Department, User, Visitor
+from app.models import Appointment, User
 from app.schemas import AppointmentCreate, AppointmentResponse, AppointmentUpdate
 from app.security import get_current_user, require_roles
-from app.services.actions.appointments import ensure_slot_available
+from app.services.actions.appointments import create_appointment as create_appointment_record, ensure_slot_available
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 VALID_STATUSES = {"pending", "confirmed", "cancelled", "completed"}
@@ -26,14 +26,7 @@ def list_appointments(db: Session = Depends(get_db), current_user: User = Depend
 
 @router.post("", response_model=AppointmentResponse, status_code=201)
 def create_appointment(payload: AppointmentCreate, db: Session = Depends(get_db)) -> Appointment:
-    _check_status(payload.status)
-    department = db.get(Department, payload.department_id)
-    visitor = db.get(Visitor, payload.visitor_id)
-    if department is None or visitor is None or department.organization_id != payload.organization_id or visitor.organization_id != payload.organization_id:
-        raise HTTPException(status_code=404, detail="Department or visitor not found")
-    ensure_slot_available(db, payload.department_id, payload.appointment_date, payload.appointment_time)
-    appointment = Appointment(**payload.model_dump())
-    db.add(appointment)
+    appointment = create_appointment_record(db, payload)
     db.commit()
     db.refresh(appointment)
     return appointment

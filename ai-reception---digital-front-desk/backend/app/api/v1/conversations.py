@@ -69,9 +69,10 @@ def create_message(conversation_id: UUID, payload: MessageCreate, db: Session = 
     db.add(visitor_message)
     db.flush()
     context = [{"role": message.role, "content": message.content} for message in conversation.messages]
+    context.append({"organization_id": str(conversation.organization_id)})
     try:
-        ai_response = AIOrchestrator().respond(payload.content, payload.language, context)
-        ActionEngine().execute(db, conversation, ai_response, conversation.organization_id)
+        ai_response = AIOrchestrator().respond(payload.content, "en", context)
+        ActionEngine().execute(db, conversation, ai_response, conversation.organization_id, payload.content)
     except Exception:
         logger.exception("AI orchestration failed")
         db.rollback()
@@ -86,12 +87,12 @@ def create_message(conversation_id: UUID, payload: MessageCreate, db: Session = 
             "confidence": 0.0,
             "action": "human_handoff",
             "needs_human": True,
-            "language": payload.language,
+            "language": "en",
             "sources": [],
         }
         from app.schemas import AIResponse
         ai_response = AIResponse.model_validate(ai_response)
-        ActionEngine().execute(db, conversation, ai_response, conversation.organization_id)
+        ActionEngine().execute(db, conversation, ai_response, conversation.organization_id, payload.content)
     assistant_message = Message(conversation_id=conversation.id, role="assistant", content=ai_response.answer, language=ai_response.language, intent=ai_response.intent, confidence=ai_response.confidence)
     db.add(assistant_message)
     db.commit()

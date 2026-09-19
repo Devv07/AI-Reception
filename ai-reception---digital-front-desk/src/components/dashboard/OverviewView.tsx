@@ -13,7 +13,6 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { DashboardService } from '../../services/dashboardService';
-import { useDemoStore } from '../../services/demoStore';
 import { LoadingState, ErrorState } from './StateViews';
 
 interface OverviewViewProps {
@@ -21,7 +20,6 @@ interface OverviewViewProps {
 }
 
 export const OverviewView: React.FC<OverviewViewProps> = ({ onNavigate }) => {
-  const demo = useDemoStore();
   const [metrics, setMetrics] = useState<any>(null);
   const [conversations, setConversations] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,13 +43,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({ onNavigate }) => {
 
   useEffect(() => {
     loadData();
-  }, [
-    demo.appointments.length,
-    demo.tickets.length,
-    demo.visitors.length,
-    demo.conversations.length,
-    demo.handoffAlert?.isActive,
-  ]);
+  }, []);
 
   if (loading) return <LoadingState message="Aggregating TCMIT operations metrics..." />;
   if (error) return <ErrorState title="Overview Error" error={error} onRetry={loadData} />;

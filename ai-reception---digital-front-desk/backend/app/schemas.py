@@ -59,6 +59,27 @@ class DepartmentResponse(APIModel):
     active: bool
 
 
+class VisitorDashboardResponse(BaseModel):
+    id: UUID
+    code: str
+    name: str
+    first_seen: datetime
+    last_interaction: datetime
+    purpose: str
+    department: str
+    status: Literal["Active", "Completed", "Needs staff"]
+    channel: Literal["Reception Kiosk", "Phone Call"]
+    duration: str
+
+
+class AnalyticsResponse(BaseModel):
+    visitors_by_hour: list[dict[str, int | str]]
+    top_intents: list[dict[str, int | str]]
+    department_demand: list[dict[str, int | str]]
+    channel_usage: list[dict[str, int | str]]
+    outcomes: list[dict[str, int | str]]
+
+
 class VisitorCreate(BaseModel):
     organization_id: UUID
     name: str | None = None
@@ -96,14 +117,13 @@ class AIResponse(BaseModel):
         "appointment",
         "complaint",
         "human_assistance",
-        "location",
         "unknown",
     ]
     confidence: float = Field(ge=0, le=1)
     action: Literal["answer_question", "book_appointment", "create_ticket", "human_handoff", "get_department"] | None = None
     needs_human: bool = False
-    language: str
-    sources: list[dict[str, str]] = []
+    language: Literal["en"] = "en"
+    sources: list[dict[str, str]] = Field(default_factory=list)
 
 
 class MessageResponse(APIModel):

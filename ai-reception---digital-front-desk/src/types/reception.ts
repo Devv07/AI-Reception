@@ -1,6 +1,7 @@
 export type ReceptionState =
   | 'IDLE'
   | 'VISITOR_DETECTED'
+  | 'GREETING'
   | 'LISTENING'
   | 'THINKING'
   | 'SPEAKING'

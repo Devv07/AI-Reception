@@ -16,7 +16,6 @@ import {
   Calendar,
 } from 'lucide-react';
 import { DashboardService } from '../../services/dashboardService';
-import { useDemoStore } from '../../services/demoStore';
 import { LoadingState, EmptyState, ErrorState } from './StateViews';
 import { ConversationItem } from '../../types/dashboard';
 
@@ -26,7 +25,6 @@ interface ConversationsViewProps {
 }
 
 export const ConversationsView: React.FC<ConversationsViewProps> = ({ selectedId, onSelectId }) => {
-  const demo = useDemoStore();
   const [conversations, setConversations] = useState<ConversationItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +49,7 @@ export const ConversationsView: React.FC<ConversationsViewProps> = ({ selectedId
 
   useEffect(() => {
     fetchConversations();
-  }, [search, channelFilter, demo.conversations]);
+  }, [search, channelFilter]);
 
   // Handle URL or external ID selection
   useEffect(() => {

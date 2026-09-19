@@ -42,8 +42,18 @@ pytest
 
 The mock AI provider is intentionally replaceable through `app.services.ai.provider.AIProvider`. It returns validated proposals only; database-changing actions are validated and executed by `app.services.actions.ActionEngine` and its handlers. AI failures return a safe human-handoff response.
 
+## Member 1 RAG
+
+The Member 1 provider uses the canonical corpus in `backend/knowledge`, the shared Chroma collection `org_knowledge`, and organization-scoped metadata. Install the optional AI/RAG dependencies from `requirements.txt`, configure `AI_PROVIDER=member1` and `AI_API_KEY`, then index the corpus for an organization:
+
+```powershell
+python scripts/ingest_knowledge.py <organization-id>
+```
+
+Questions without a sufficiently relevant indexed result return an English human-assistance fallback instead of an invented answer. Source metadata is returned in the normalized AI response.
+
 ## Frontend connection
 
-The current frontend still uses its local mock services and has no Vite API proxy in this checkout. The intended base URL is `http://localhost:8000/api/v1`; connect the frontend service methods to these REST endpoints before the final live demo. WebSocket event delivery and knowledge/RAG endpoints are not present in this branch.
+The main reception workflow uses the frontend API client and the intended base URL is `http://localhost:8000/api/v1`. WebSocket event delivery, visitor listing, analytics, and knowledge upload/search endpoints are not present in this branch.
 
 See [BACKEND_ARCHITECTURE.md](../../docs/BACKEND_ARCHITECTURE.md), [API_CONTRACT.md](../../docs/API_CONTRACT.md), and [DATABASE.md](../../docs/DATABASE.md).
