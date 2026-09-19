@@ -1,0 +1,31 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+
+# Local databases and generated database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/

@@ -1,0 +1,241 @@
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
+
+    background:
+        radial-gradient(
+            circle at center,
+            #202a42 0%,
+            #101522 65%,
+            #080b12 100%
+        );
+}
+
+#app {
+    width: 100%;
+    height: 100%;
+
+    position: relative;
+}
+
+#avatar-canvas {
+    display: block;
+
+    width: 100%;
+    height: 100%;
+}
+
+
+/* =========================================================
+   STATUS PANEL
+   ========================================================= */
+
+.avatar-ui {
+
+    position: absolute;
+
+    top: 24px;
+    left: 24px;
+
+    min-width: 260px;
+
+    padding: 18px 20px;
+
+    border-radius: 16px;
+
+    background:
+        rgba(15, 20, 35, 0.86);
+
+    backdrop-filter:
+        blur(12px);
+
+    color: white;
+
+    box-shadow:
+        0 12px 40px
+        rgba(0, 0, 0, 0.3);
+}
+
+.avatar-title {
+
+    font-size: 19px;
+
+    font-weight: 700;
+
+    margin-bottom: 8px;
+}
+
+.avatar-status {
+
+    font-size: 13px;
+
+    opacity: 0.85;
+
+    margin-bottom: 12px;
+
+    line-height: 1.4;
+}
+
+.avatar-state {
+
+    font-size: 13px;
+
+    font-weight: 700;
+
+    letter-spacing: 0.5px;
+}
+
+#state-label {
+
+    margin-left: 5px;
+
+    color: #7ee787;
+}
+
+
+/* =========================================================
+   STATUS COLORS
+   ========================================================= */
+
+#status[data-type="loading"] {
+
+    color: #ffd166;
+}
+
+#status[data-type="ready"] {
+
+    color: #7ee787;
+}
+
+#status[data-type="error"] {
+
+    color: #ff6b6b;
+}
+
+
+/* =========================================================
+   CONTROLS
+   ========================================================= */
+
+.demo-controls {
+
+    position: absolute;
+
+    bottom: 24px;
+
+    left: 50%;
+
+    transform:
+        translateX(-50%);
+
+    display: flex;
+
+    flex-wrap: wrap;
+
+    justify-content: center;
+
+    gap: 8px;
+
+    width:
+        min(
+            850px,
+            calc(100% - 40px)
+        );
+}
+
+.demo-controls button {
+
+    border: 1px solid
+        rgba(255, 255, 255, 0.12);
+
+    padding:
+        10px 14px;
+
+    border-radius: 9px;
+
+    background:
+        rgba(255, 255, 255, 0.10);
+
+    color: white;
+
+    cursor: pointer;
+
+    font-size: 12px;
+
+    font-weight: 600;
+
+    transition:
+        background 0.2s ease,
+        transform 0.2s ease;
+}
+
+.demo-controls button:hover {
+
+    background:
+        rgba(255, 255, 255, 0.20);
+
+    transform:
+        translateY(-2px);
+}
+
+.demo-controls button:active {
+
+    transform:
+        translateY(0);
+}
+
+
+/* =========================================================
+   MOBILE
+   ========================================================= */
+
+@media (max-width: 600px) {
+
+    .avatar-ui {
+
+        top: 12px;
+        left: 12px;
+
+        min-width: 220px;
+
+        padding: 13px 15px;
+    }
+
+    .avatar-title {
+
+        font-size: 16px;
+    }
+
+    .avatar-status {
+
+        font-size: 11px;
+    }
+
+    .demo-controls {
+
+        bottom: 12px;
+
+        width:
+            calc(100% - 20px);
+    }
+
+    .demo-controls button {
+
+        padding:
+            8px 10px;
+
+        font-size: 10px;
+    }
+}

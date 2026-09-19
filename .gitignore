@@ -1,12 +1,53 @@
-@"
-.env
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
 .venv/
 venv/
+env/
+ENV/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Node
 node_modules/
-__pycache__/
-*.pyc
 dist/
-build/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
 .vscode/
 .idea/
-"@ | Set-Content .gitignore
+*.suo
+*.user
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Build / cache
+.cache/
+.temp/
+tmp/
+
+# Large generated files
+*.mp4
+*.mov
+*.avi
+*.zip

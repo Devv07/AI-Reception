@@ -1,0 +1,6 @@
+{
+  "name": "AI Reception - Digital Front Desk",
+  "description": "Multimodal AI-powered digital reception for organizations featuring real-time presence detection, voice conversation, knowledge base source verification, and autonomous service workflows.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
